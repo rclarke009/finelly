@@ -1,0 +1,1598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Finelly — Private Cash & Document Assistant</title>
+  <style>
+    :root {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --border: #d0d7de;
+      --text: #24292f;
+      --text-muted: #57606a;
+      --accent: #0969da;
+      --accent-hover: #0550ae;
+      --on-accent: #ffffff;
+      --success: #1a7f37;
+      --error: #cf222e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .layout {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 1rem 1.5rem 2rem;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1.5rem;
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0;
+      margin-right: auto;
+    }
+    .tabs {
+      display: flex;
+      gap: 0.25rem;
+    }
+    .tabs button {
+      padding: 0.4rem 0.75rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .tabs button:hover {
+      background: var(--surface);
+    }
+    .tabs button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--on-accent);
+    }
+    .panel {
+      display: none;
+    }
+    .panel.active {
+      display: block;
+    }
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 0.5rem 0.6rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    button[type="submit"] {
+      padding: 0.5rem 1rem;
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: var(--on-accent);
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button[type="submit"]:hover {
+      background: var(--accent-hover);
+    }
+    .ingest-or {
+      margin: 0.75rem 0 0.25rem;
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+    .message {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .message.success { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+    .message.error { background: rgba(248, 81, 73, 0.15); color: var(--error); }
+    .message.loading { background: rgba(9, 105, 218, 0.08); color: var(--accent); }
+
+    .doc-list { list-style: none; padding: 0; margin: 0; }
+    .doc-item {
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .doc-item:last-child { border-bottom: none; }
+    .doc-id { font-weight: 500; color: var(--accent); }
+    .doc-meta { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem; }
+    .doc-snippet { margin-top: 0.5rem; font-size: 0.8rem; opacity: 0.9; max-height: 3em; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Data tab */
+    .data-subtabs { display: flex; gap: 0.25rem; margin-bottom: 1rem; }
+    .data-subtabs button {
+      padding: 0.4rem 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .data-subtabs button:hover { background: var(--bg); }
+    .data-subtabs button.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .data-section { display: none; }
+    .data-section.active { display: block; }
+    .data-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem; }
+    .data-toolbar h3 { margin: 0; font-size: 1rem; }
+    .btn-add {
+      padding: 0.4rem 0.75rem;
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: var(--on-accent);
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .btn-add:hover { background: var(--accent-hover); }
+    .data-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; background: var(--surface); border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+    .data-table th, .data-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    .data-table th { background: var(--bg); font-weight: 600; color: var(--text-muted); }
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table .actions { white-space: nowrap; }
+    .btn-edit, .btn-delete {
+      padding: 0.25rem 0.5rem;
+      margin-right: 0.25rem;
+      font-size: 0.8rem;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+    }
+    .btn-edit:hover { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .btn-delete:hover { background: var(--error); border-color: var(--error); color: white; }
+    .data-empty { color: var(--text-muted); font-size: 0.9rem; padding: 1rem; }
+    .data-form-inline { margin-top: 1rem; padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+    .data-form-inline label { margin-top: 0.5rem; }
+    .data-form-inline label:first-of-type { margin-top: 0; }
+    .data-form-inline #data-form-cancel,
+    .data-form-inline #documents-edit-cancel { margin-left: 0.5rem; background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+    .data-form-inline #data-form-cancel:hover,
+    .data-form-inline #documents-edit-cancel:hover { background: var(--bg); }
+    .field-hint { display: block; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+    .ingest-text-details { margin-top: 1rem; }
+    .ingest-text-details summary { cursor: pointer; color: var(--text-muted); font-size: 0.9rem; }
+    .ingest-text-details summary:hover { color: var(--text); }
+    .ingest-text-details[open] summary { margin-bottom: 1rem; }
+    .ingest-meta-start { margin-top: 1rem; display: block; }
+    .ingest-text-details[open] label { margin-top: 0; display: block; }
+    .ingest-create-account-wrap { margin-top: 0.5rem; margin-bottom: 1rem; }
+    .ingest-create-account-wrap summary { cursor: pointer; color: var(--text-muted); font-size: 0.9rem; }
+    .ingest-create-account-wrap summary:hover { color: var(--text); }
+    .ingest-create-account-wrap[open] summary { margin-bottom: 0.5rem; }
+    .data-form-inline #ingest-create-account-cancel { margin-left: 0.5rem; background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+    .data-form-inline #ingest-create-account-cancel:hover { background: var(--bg); }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <header>
+      <h1>Finelly</h1>
+      <nav class="tabs">
+        <button type="button" data-tab="ingest">Ingest</button>
+        <button type="button" data-tab="ask" class="active">Ask</button>
+        <button type="button" data-tab="documents">Documents</button>
+        <button type="button" data-tab="data">Data</button>
+        <button type="button" data-tab="status">Status</button>
+        <button type="button" data-tab="past">Past advice</button>
+      </nav>
+    </header>
+
+    <section id="panel-ingest" class="panel">
+      <form id="form-ingest">
+        <label for="ingest-pdf">PDF or image (JPG, PNG)</label>
+        <input type="file" id="ingest-pdf" name="file" accept=".pdf,application/pdf,.jpg,.jpeg,image/jpeg,.png,image/png" />
+        <details id="ingest-text-details" class="ingest-text-details">
+          <summary>Or paste text instead</summary>
+          <label for="ingest-text">Text to ingest *</label>
+          <textarea id="ingest-text" name="text" placeholder="Paste financial document text…"></textarea>
+        </details>
+        <label for="ingest-doc_id" class="ingest-meta-start">Doc ID (optional; default: generated)</label>
+        <input type="text" id="ingest-doc_id" name="doc_id" placeholder="e.g. statement-2024-q1" />
+        <label for="ingest-title">Title (optional)</label>
+        <input type="text" id="ingest-title" name="title" placeholder="Document title" />
+        <label for="ingest-source">Source (optional)</label>
+        <input type="text" id="ingest-source" name="source" placeholder="File or origin" />
+        <label for="ingest-tags">Tags (optional; comma-separated, e.g. 2024, Checking)</label>
+        <input type="text" id="ingest-tags" name="tags" placeholder="e.g. 2024, Checking" />
+        <label for="ingest-tag-from-account">Add tag from account</label>
+        <select id="ingest-tag-from-account" name="tag_from_account">
+          <option value="">Select account</option>
+        </select>
+        <label for="ingest-account_id">Link to account</label>
+        <select id="ingest-account_id" name="account_id">
+          <option value="">No linked account</option>
+        </select>
+        <details id="ingest-create-account-details" class="ingest-create-account-wrap">
+          <summary>Create new account</summary>
+          <div id="ingest-create-account-form" class="data-form-inline">
+            <div id="ingest-create-account-message" class="message" role="alert" hidden></div>
+            <label for="ingest-new-account-name">Name *</label>
+            <input type="text" id="ingest-new-account-name" required placeholder="Account name" />
+            <label for="ingest-new-account-type">Type (optional)</label>
+            <input type="text" id="ingest-new-account-type" placeholder="e.g. Savings" />
+            <label for="ingest-new-account-institution">Institution (optional)</label>
+            <input type="text" id="ingest-new-account-institution" placeholder="e.g. First National Bank" />
+            <button type="button" id="ingest-create-account-btn">Create</button>
+            <button type="button" id="ingest-create-account-cancel">Cancel</button>
+          </div>
+        </details>
+        <button type="submit">Ingest</button>
+      </form>
+      <div id="ingest-message" class="message" role="alert" hidden></div>
+    </section>
+
+    <section id="panel-ask" class="panel active">
+      <form id="form-ask">
+        <label for="ask-question">Question *</label>
+        <textarea id="ask-question" name="question" required placeholder="e.g. What does this document say about early withdrawal? or Summarize the fees and rates."></textarea>
+        <label for="ask-doc_id">Limit to document (optional)</label>
+        <select id="ask-doc_id" name="doc_id">
+          <option value="">All documents</option>
+        </select>
+        <button type="submit">Ask</button>
+      </form>
+      <div id="ask-loading" class="message loading" hidden>Working…</div>
+      <div id="ask-message" class="message" role="alert" hidden></div>
+      <div id="ask-answer" hidden>
+        <h3>Answer</h3>
+        <div id="ask-answer-text"></div>
+      </div>
+    </section>
+
+    <section id="panel-documents" class="panel">
+      <h2>Document review</h2>
+      <p>View ingested documents and edit tags or linked account.</p>
+      <button type="button" id="btn-load-documents">Load documents / fresh list</button>
+      <div id="documents-loading" class="message" hidden>Loading…</div>
+      <div id="documents-empty" class="message" hidden>No documents yet. Use Ingest to add some.</div>
+      <div id="documents-list" hidden>
+        <table class="data-table documents-table">
+          <thead><tr><th>Doc ID</th><th>Title</th><th>Chunks</th><th>Tags</th><th>Linked account</th><th></th></tr></thead>
+          <tbody id="documents-tbody"></tbody>
+        </table>
+      </div>
+      <div id="documents-edit-form" class="data-form-inline" hidden>
+        <h3 id="documents-edit-title">Edit document</h3>
+        <div id="documents-edit-message" class="message" role="alert" hidden></div>
+        <form id="form-documents-edit">
+          <input type="hidden" id="documents-edit-doc_id" name="doc_id" />
+          <label for="documents-edit-tags">Tags (comma-separated)</label>
+          <input type="text" id="documents-edit-tags" name="tags" placeholder="e.g. 2024, Checking" />
+          <label for="documents-edit-account_id">Linked account</label>
+          <select id="documents-edit-account_id" name="account_id">
+            <option value="">(None)</option>
+          </select>
+          <button type="submit">Save</button>
+          <button type="button" id="documents-edit-cancel">Cancel</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="panel-data" class="panel">
+      <div class="data-subtabs">
+        <button type="button" data-data-section="accounts">Accounts</button>
+        <button type="button" data-data-section="positions">Positions</button>
+        <button type="button" data-data-section="obligations">Obligations</button>
+      </div>
+      <div id="data-section-accounts" class="data-section">
+        <div class="data-toolbar">
+          <h3>Accounts</h3>
+          <button type="button" class="btn-add" id="btn-add-account">Add account</button>
+        </div>
+        <div id="accounts-loading" class="data-empty" hidden>Loading…</div>
+        <div id="accounts-empty" class="data-empty" hidden>Add your accounts at each institution first (e.g. checking, savings, or brokerage relationship).</div>
+        <table id="accounts-table" class="data-table" hidden>
+          <thead><tr><th>Name</th><th>Type</th><th>Institution</th><th></th></tr></thead>
+          <tbody id="accounts-tbody"></tbody>
+        </table>
+      </div>
+      <div id="data-section-positions" class="data-section">
+        <div class="data-toolbar">
+          <h3>Positions</h3>
+          <button type="button" class="btn-add" id="btn-add-position">Add position</button>
+        </div>
+        <div id="positions-loading" class="data-empty" hidden>Loading…</div>
+        <div id="positions-empty" class="data-empty" hidden>Add specific holdings (CDs, money markets, etc.) inside an existing account.</div>
+        <table id="positions-table" class="data-table" hidden>
+          <thead><tr><th>Account</th><th>Asset type</th><th>Description</th><th>Principal</th><th>Maturity</th><th></th></tr></thead>
+          <tbody id="positions-tbody"></tbody>
+        </table>
+      </div>
+      <div id="data-section-obligations" class="data-section">
+        <div class="data-toolbar">
+          <h3>Obligations</h3>
+          <button type="button" class="btn-add" id="btn-add-obligation">Add obligation</button>
+        </div>
+        <div id="obligations-loading" class="data-empty" hidden>Loading…</div>
+        <div id="obligations-empty" class="data-empty" hidden>No obligations yet. Add bills, taxes, or other payments due to track due dates.</div>
+        <table id="obligations-table" class="data-table" hidden>
+          <thead><tr><th>Description</th><th>Due date</th><th>Amount</th><th>Priority</th><th></th></tr></thead>
+          <tbody id="obligations-tbody"></tbody>
+        </table>
+      </div>
+      <div id="data-form-inline" class="data-form-inline" hidden>
+        <h3 id="data-form-title">Form</h3>
+        <div id="data-form-message" class="message" role="alert" hidden></div>
+        <form id="data-form">
+          <div id="data-form-fields"></div>
+          <button type="submit" id="data-form-submit">Save</button>
+          <button type="button" id="data-form-cancel">Cancel</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="panel-status" class="panel">
+      <h2>Decision status</h2>
+      <p>Get current advice based on your accounts, positions, and obligations (e.g. CDs maturing, obligations due).</p>
+      <button type="button" id="btn-status">Check status</button>
+      <div id="status-loading" class="message" hidden>Loading…</div>
+      <div id="status-result" hidden>
+        <div id="status-badge" class="message"></div>
+        <h3>Memo</h3>
+        <div id="status-memo"></div>
+      </div>
+    </section>
+
+    <section id="panel-past" class="panel">
+      <h2>Past advice</h2>
+      <p>History of decision checks and memos.</p>
+      <button type="button" id="btn-past">Load history</button>
+      <div id="past-loading" class="message" hidden>Loading…</div>
+      <div id="past-empty" class="message" hidden>No past decisions yet.</div>
+      <ul id="past-list" class="doc-list"></ul>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const TAB_KEY = 'finelly-tab';
+
+      function getApiBase() {
+        return window.location.origin;
+      }
+
+      // Tabs
+      const tabButtons = document.querySelectorAll('[data-tab]');
+      const panels = document.querySelectorAll('.panel');
+      function setTab(name) {
+        tabButtons.forEach(function (btn) {
+          btn.classList.toggle('active', btn.getAttribute('data-tab') === name);
+        });
+        panels.forEach(function (panel) {
+          panel.classList.toggle('active', panel.id === 'panel-' + name);
+        });
+        try { localStorage.setItem(TAB_KEY, name); } catch (e) {}
+      }
+      tabButtons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          setTab(btn.getAttribute('data-tab'));
+        });
+      });
+      var saved = null;
+      try { saved = localStorage.getItem(TAB_KEY); } catch (e) {}
+      if (['ingest', 'ask', 'documents', 'data', 'status', 'past'].indexOf(saved) >= 0) setTab(saved);
+
+      // Documents tab: load list when tab is shown
+      var documentsAccountsCache = [];
+      function loadDocumentsList() {
+        var listEl = document.getElementById('documents-list');
+        var loadingEl = document.getElementById('documents-loading');
+        var emptyEl = document.getElementById('documents-empty');
+        var btnLoad = document.getElementById('btn-load-documents');
+        if (!listEl || !loadingEl || !emptyEl) return;
+        listEl.hidden = true;
+        emptyEl.hidden = true;
+        document.getElementById('documents-edit-form').hidden = true;
+        loadingEl.hidden = false;
+        if (btnLoad) btnLoad.disabled = true;
+        fetch(getApiBase() + '/documents')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            loadingEl.hidden = true;
+            if (btnLoad) btnLoad.disabled = false;
+            var docs = (data && data.documents) ? data.documents : [];
+            if (docs.length === 0) {
+              emptyEl.hidden = false;
+              return;
+            }
+            fetch(getApiBase() + '/accounts').then(function (r) { return r.json(); }).then(function (accounts) {
+              documentsAccountsCache = accounts || [];
+              renderDocumentsList(docs, documentsAccountsCache);
+              listEl.hidden = false;
+            }).catch(function () {
+              renderDocumentsList(docs, []);
+              listEl.hidden = false;
+            });
+          })
+          .catch(function (err) {
+            loadingEl.hidden = true;
+            if (btnLoad) btnLoad.disabled = false;
+            emptyEl.textContent = 'Failed to load documents.';
+            emptyEl.hidden = false;
+          });
+      }
+      function renderDocumentsList(docs, accounts) {
+        var listEl = document.getElementById('documents-list');
+        var tbody = document.getElementById('documents-tbody');
+        if (!listEl || !tbody) return;
+        var accountById = {};
+        (accounts || []).forEach(function (a) { accountById[a.id] = a; });
+        tbody.innerHTML = '';
+        var esc = typeof escapeHtml !== 'undefined' ? escapeHtml : function (s) { return s == null ? '' : String(s); };
+        docs.forEach(function (d) {
+          var docIdLabel = (d.doc_id != null && String(d.doc_id).trim() !== '') ? d.doc_id : '(no id)';
+          var titleLabel = (d.title != null && String(d.title).trim() !== '') ? d.title : '(no title)';
+          var linkedNames = (d.linked_account_ids || []).map(function (id) { return (accountById[id] && accountById[id].name) ? accountById[id].name : id; });
+          var linkedLabel = linkedNames.length > 0 ? linkedNames.join(', ') : 'No linked account';
+          var chunksText = d.num_chunks != null ? String(d.num_chunks) : '—';
+          var tagsText = (d.tags && d.tags.length) ? d.tags.join(', ') : '—';
+          var tr = document.createElement('tr');
+          tr.innerHTML =
+            '<td><span class="doc-id">' + esc(docIdLabel) + '</span></td>' +
+            '<td>' + esc(titleLabel) + '</td>' +
+            '<td>' + esc(chunksText) + '</td>' +
+            '<td>' + esc(tagsText) + '</td>' +
+            '<td>' + esc(linkedLabel) + '</td>' +
+            '<td class="actions"><button type="button" class="btn-edit" data-doc-edit="' + esc(d.doc_id) + '">Edit</button></td>';
+          tr.querySelector('[data-doc-edit]').addEventListener('click', function () { openDocumentsEdit(d); });
+          tbody.appendChild(tr);
+        });
+      }
+      function openDocumentsEdit(doc) {
+        var formWrap = document.getElementById('documents-edit-form');
+        var titleEl = document.getElementById('documents-edit-title');
+        var docIdInput = document.getElementById('documents-edit-doc_id');
+        var tagsInput = document.getElementById('documents-edit-tags');
+        var accountSelect = document.getElementById('documents-edit-account_id');
+        var msgEl = document.getElementById('documents-edit-message');
+        if (!formWrap || !docIdInput || !tagsInput || !accountSelect) return;
+        msgEl.hidden = true;
+        titleEl.textContent = 'Edit: ' + (doc.title && String(doc.title).trim() ? doc.title : doc.doc_id || '(no id)');
+        docIdInput.value = doc.doc_id;
+        tagsInput.value = (doc.tags || []).join(', ');
+        accountSelect.innerHTML = '<option value="">(None)</option>';
+        var accounts = documentsAccountsCache.length ? documentsAccountsCache : [];
+        function fillAccounts() {
+          accounts.forEach(function (a) {
+            var opt = document.createElement('option');
+            opt.value = a.id;
+            opt.textContent = a.name || a.id;
+            if ((doc.linked_account_ids || []).indexOf(a.id) >= 0) opt.selected = true;
+            accountSelect.appendChild(opt);
+          });
+          var firstLinked = (doc.linked_account_ids || [])[0];
+          if (firstLinked && !accountSelect.value) accountSelect.value = firstLinked;
+        }
+        if (accounts.length) { fillAccounts(); formWrap.hidden = false; return; }
+        fetch(getApiBase() + '/accounts').then(function (r) { return r.json(); }).then(function (accs) {
+          documentsAccountsCache = accs || [];
+          accounts = documentsAccountsCache;
+          fillAccounts();
+          var firstLinked = (doc.linked_account_ids || [])[0];
+          if (firstLinked && accountSelect.querySelector('option[value="' + firstLinked + '"]')) accountSelect.value = firstLinked;
+          formWrap.hidden = false;
+        }).catch(function () { formWrap.hidden = false; });
+      }
+      document.getElementById('btn-load-documents').addEventListener('click', loadDocumentsList);
+      document.getElementById('documents-edit-cancel').addEventListener('click', function () {
+        document.getElementById('documents-edit-form').hidden = true;
+      });
+      document.getElementById('form-documents-edit').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        var docIdInput = document.getElementById('documents-edit-doc_id');
+        var tagsInput = document.getElementById('documents-edit-tags');
+        var accountSelect = document.getElementById('documents-edit-account_id');
+        var msgEl = document.getElementById('documents-edit-message');
+        var docId = (docIdInput && docIdInput.value) ? docIdInput.value.trim() : '';
+        if (!docId) return;
+        var tagsStr = (tagsInput && tagsInput.value) ? tagsInput.value : '';
+        var tags = tagsStr.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        var accountId = (accountSelect && accountSelect.value) ? accountSelect.value.trim() : null;
+        msgEl.hidden = true;
+        try {
+          var body = { tags: tags };
+          if (accountId !== undefined && accountId !== '') body.account_id = accountId;
+          else body.account_id = null;
+          var res = await fetch(getApiBase() + '/documents/' + encodeURIComponent(docId), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          if (!res.ok) {
+            var data = await res.json().catch(function () { return {}; });
+            msgEl.textContent = data.detail || res.statusText || 'Update failed';
+            msgEl.className = 'message error';
+            msgEl.hidden = false;
+            return;
+          }
+          document.getElementById('documents-edit-form').hidden = true;
+          loadDocumentsList();
+        } catch (err) {
+          msgEl.textContent = 'Request failed: ' + err.message;
+          msgEl.className = 'message error';
+          msgEl.hidden = false;
+        }
+      });
+
+      // Data sub-tabs (Accounts / Positions / Obligations)
+      var dataSectionKey = 'finelly-data-section';
+      var dataSectionBtns = document.querySelectorAll('[data-data-section]');
+      var dataSections = document.querySelectorAll('.data-section');
+      function setDataSection(name) {
+        dataSectionBtns.forEach(function (btn) {
+          btn.classList.toggle('active', btn.getAttribute('data-data-section') === name);
+        });
+        dataSections.forEach(function (el) {
+          el.classList.toggle('active', el.id === 'data-section-' + name);
+        });
+        try { localStorage.setItem(dataSectionKey, name); } catch (e) {}
+        if (name === 'accounts') loadAccounts();
+        else if (name === 'positions') loadPositions();
+        else if (name === 'obligations') loadObligations();
+      }
+      dataSectionBtns.forEach(function (btn) {
+        btn.addEventListener('click', function () { setDataSection(btn.getAttribute('data-data-section')); });
+      });
+      setDataSection(localStorage.getItem(dataSectionKey) || 'accounts');
+
+      // Ingest form: paste text (POST /ingest) or upload PDF (POST /ingest/pdf)
+      const ingestForm = document.getElementById('form-ingest');
+      const ingestTagsInput = document.getElementById('ingest-tags');
+      const ingestTagFromAccountSelect = document.getElementById('ingest-tag-from-account');
+      const ingestAccountIdSelect = document.getElementById('ingest-account_id');
+      function refreshIngestAccountDropdowns(opts) {
+        opts = opts || {};
+        fetch(getApiBase() + '/accounts')
+          .then(function (r) { return r.json(); })
+          .then(function (accounts) {
+            const tagSel = ingestTagFromAccountSelect;
+            const tagKeep = tagSel.querySelector('option[value=""]');
+            tagSel.innerHTML = '';
+            tagSel.appendChild(tagKeep);
+            (accounts || []).forEach(function (acc) {
+              const opt = document.createElement('option');
+              opt.value = acc.name || acc.id || '';
+              opt.textContent = acc.name || acc.id || acc.id;
+              tagSel.appendChild(opt);
+            });
+            const linkSel = ingestAccountIdSelect;
+            const linkKeep = linkSel.querySelector('option[value=""]');
+            linkSel.innerHTML = '';
+            linkSel.appendChild(linkKeep);
+            (accounts || []).forEach(function (acc) {
+              const opt = document.createElement('option');
+              opt.value = acc.id || '';
+              opt.textContent = acc.name || acc.id || acc.id;
+              linkSel.appendChild(opt);
+            });
+            if (opts.selectAccountId && linkSel.querySelector('option[value="' + opts.selectAccountId + '"]')) linkSel.value = opts.selectAccountId;
+            if (opts.selectTagByName && tagSel.querySelector('option[value="' + opts.selectTagByName + '"]')) tagSel.value = opts.selectTagByName;
+          })
+          .catch(function () {});
+      }
+      refreshIngestAccountDropdowns();
+      const ingestCreateAccountDetails = document.getElementById('ingest-create-account-details');
+      const ingestCreateAccountMessage = document.getElementById('ingest-create-account-message');
+      const ingestNewAccountName = document.getElementById('ingest-new-account-name');
+      const ingestNewAccountType = document.getElementById('ingest-new-account-type');
+      const ingestNewAccountInstitution = document.getElementById('ingest-new-account-institution');
+      document.getElementById('ingest-create-account-btn').addEventListener('click', async function () {
+        const name = (ingestNewAccountName.value || '').trim();
+        ingestCreateAccountMessage.hidden = true;
+        if (!name) {
+          ingestCreateAccountMessage.textContent = 'Enter an account name.';
+          ingestCreateAccountMessage.className = 'message error';
+          ingestCreateAccountMessage.hidden = false;
+          return;
+        }
+        ingestCreateAccountMessage.textContent = 'Creating…';
+        ingestCreateAccountMessage.className = 'message loading';
+        ingestCreateAccountMessage.hidden = false;
+        try {
+          const res = await fetch(getApiBase() + '/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: name,
+              type: (ingestNewAccountType.value || '').trim() || null,
+              institution: (ingestNewAccountInstitution.value || '').trim() || null
+            })
+          });
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) {
+            ingestCreateAccountMessage.textContent = data.detail || res.statusText || 'Failed to create account.';
+            ingestCreateAccountMessage.className = 'message error';
+            ingestCreateAccountMessage.hidden = false;
+            return;
+          }
+          refreshIngestAccountDropdowns({ selectAccountId: data.id, selectTagByName: data.name });
+          ingestCreateAccountDetails.removeAttribute('open');
+          ingestNewAccountName.value = '';
+          ingestNewAccountType.value = '';
+          ingestNewAccountInstitution.value = '';
+          ingestCreateAccountMessage.textContent = 'Account created.';
+          ingestCreateAccountMessage.className = 'message';
+          ingestCreateAccountMessage.hidden = false;
+          setTimeout(function () { ingestCreateAccountMessage.hidden = true; }, 2000);
+        } catch (err) {
+          ingestCreateAccountMessage.textContent = 'Request failed: ' + err.message;
+          ingestCreateAccountMessage.className = 'message error';
+          ingestCreateAccountMessage.hidden = false;
+        }
+      });
+      document.getElementById('ingest-create-account-cancel').addEventListener('click', function () {
+        ingestCreateAccountDetails.removeAttribute('open');
+        ingestNewAccountName.value = '';
+        ingestNewAccountType.value = '';
+        ingestNewAccountInstitution.value = '';
+        ingestCreateAccountMessage.hidden = true;
+      });
+      ingestTagFromAccountSelect.addEventListener('change', function () {
+        const name = this.value.trim();
+        if (!name) return;
+        const current = (ingestTagsInput.value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        if (current.indexOf(name) >= 0) return;
+        current.push(name);
+        ingestTagsInput.value = current.join(', ');
+        this.value = '';
+      });
+      const ingestPdfInput = document.getElementById('ingest-pdf');
+      const ingestTextDetails = document.getElementById('ingest-text-details');
+      const ingestTextarea = document.getElementById('ingest-text');
+      ingestTextDetails.addEventListener('toggle', function () {
+        if (this.open) ingestPdfInput.value = '';
+      });
+      ingestPdfInput.addEventListener('change', function () {
+        const sourceInput = document.getElementById('ingest-source');
+        if (this.files && this.files.length > 0 && this.files[0].name) {
+          if (!sourceInput.value.trim()) sourceInput.value = this.files[0].name;
+          ingestTextarea.value = '';
+          ingestTextDetails.removeAttribute('open');
+        } else if (sourceInput.value === ingestPdfInput._lastFilename) {
+          sourceInput.value = '';
+        }
+        ingestPdfInput._lastFilename = (this.files && this.files[0]) ? this.files[0].name : '';
+      });
+      ingestForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const msg = document.getElementById('ingest-message');
+        msg.hidden = true;
+        const form = e.target;
+        const hasPdf = form.file.files && form.file.files.length > 0;
+        const hasText = form.text.value.trim().length > 0;
+        if (hasPdf && hasText) {
+          msg.textContent = 'Provide either text or a file (PDF/image), not both. Clear one and try again.';
+          msg.className = 'message error';
+          msg.hidden = false;
+          return;
+        }
+        if (!hasPdf) {
+          if (!hasText) {
+            msg.textContent = 'Enter text to ingest or choose a PDF or image (JPG/PNG) file.';
+            msg.className = 'message error';
+            msg.hidden = false;
+            return;
+          }
+        }
+        const submitBtn = form.querySelector('button[type="submit"]');
+        msg.textContent = 'Ingesting…';
+        msg.className = 'message loading';
+        msg.hidden = false;
+        if (submitBtn) submitBtn.disabled = true;
+        function pickDocId(overrideDocId) {
+          const fromForm = form.doc_id.value.trim();
+          if (overrideDocId !== undefined) return overrideDocId;
+          return fromForm || null;
+        }
+        function isImageFile(file) {
+          if (!file || !file.type) return false;
+          return file.type === 'image/jpeg' || file.type === 'image/png' || /\.(jpe?g|png)$/i.test(file.name || '');
+        }
+        async function doIngest(confirmDuplicateContent, overrideDocId) {
+          let res;
+          if (hasPdf) {
+            const fd = new FormData();
+            fd.append('file', form.file.files[0]);
+            const docId = pickDocId(overrideDocId);
+            if (docId) fd.append('doc_id', docId);
+            if (form.title.value.trim()) fd.append('title', form.title.value.trim());
+            if (form.source.value.trim()) fd.append('source', form.source.value.trim());
+            fd.append('chunk_size', '800');
+            fd.append('chunk_overlap', '100');
+            if (confirmDuplicateContent) fd.append('confirm_duplicate_content', 'true');
+            const tagsStr = (form.tags && form.tags.value) ? form.tags.value.trim() : '';
+            if (tagsStr) fd.append('tags', tagsStr);
+            const accountId = (form.account_id && form.account_id.value) ? form.account_id.value.trim() : '';
+            if (accountId) fd.append('account_id', accountId);
+            const endpoint = isImageFile(form.file.files[0]) ? '/ingest/image' : '/ingest/pdf';
+            res = await fetch(getApiBase() + endpoint, { method: 'POST', body: fd });
+          } else {
+            const body = {
+              text: form.text.value.trim(),
+              chunking_options: { chunk_size: 800, chunk_overlap: 100 },
+              confirm_duplicate_content: !!confirmDuplicateContent
+            };
+            const docId = pickDocId(overrideDocId);
+            if (docId) body.doc_id = docId;
+            if (form.title.value.trim()) body.title = form.title.value.trim();
+            if (form.source.value.trim()) body.source = form.source.value.trim();
+            const tagsArr = (form.tags && form.tags.value) ? form.tags.value.trim().split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
+            if (tagsArr.length) body.tags = tagsArr;
+            const accountId = (form.account_id && form.account_id.value) ? form.account_id.value.trim() : '';
+            if (accountId) body.account_id = accountId;
+            res = await fetch(getApiBase() + '/ingest', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+          }
+          return res;
+        }
+        try {
+          let res = await doIngest(false);
+          const data = await res.json().catch(function () { return {}; });
+          if (!res.ok) {
+            const isDuplicateContent = res.status === 409 && data.detail && typeof data.detail === 'object' && data.detail.code === 'duplicate_content';
+            if (isDuplicateContent) {
+              const existingDocId = data.detail.existing_doc_id || '';
+              const ingestAnyway = window.confirm(
+                'This text or file is already ingested as "' + existingDocId + '". Ingest again with a different doc ID?'
+              );
+              if (!ingestAnyway) {
+                msg.textContent = 'Ingest cancelled.';
+                msg.className = 'message error';
+                msg.hidden = false;
+                if (submitBtn) submitBtn.disabled = false;
+                return;
+              }
+              const currentDocId = form.doc_id.value.trim();
+              const newDocId = (currentDocId === existingDocId || !currentDocId) ? existingDocId + '-copy' : currentDocId;
+              if (!currentDocId || currentDocId === existingDocId) form.doc_id.value = newDocId;
+              res = await doIngest(true, newDocId);
+              const data2 = await res.json().catch(function () { return {}; });
+              if (!res.ok) {
+                msg.textContent = (data2.detail && (typeof data2.detail === 'string' ? data2.detail : data2.detail.existing_doc_id || data2.detail.code)) || res.statusText || 'Ingest failed';
+                msg.className = 'message error';
+                msg.hidden = false;
+                if (submitBtn) submitBtn.disabled = false;
+                return;
+              }
+              msg.textContent = 'Success! Ingested: ' + (data2.doc_id || '') + '.';
+              msg.className = 'message success';
+              msg.hidden = false;
+              refreshDocsSelect();
+              form.text.value = '';
+              form.doc_id.value = '';
+              form.title.value = '';
+              form.source.value = '';
+              if (form.tags) form.tags.value = '';
+              if (ingestTagFromAccountSelect) ingestTagFromAccountSelect.value = '';
+              if (hasPdf) form.file.value = '';
+              if (submitBtn) submitBtn.disabled = false;
+              return;
+            }
+            msg.textContent = (typeof data.detail === 'string' ? data.detail : (data.detail && data.detail.code) || res.statusText) || 'Ingest failed';
+            msg.className = 'message error';
+            msg.hidden = false;
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+          msg.textContent = 'Success! Ingested: ' + (data.doc_id || '') + '.';
+          msg.className = 'message success';
+          msg.hidden = false;
+          refreshDocsSelect();
+          form.text.value = '';
+          form.doc_id.value = '';
+          form.title.value = '';
+          form.source.value = '';
+          if (form.tags) form.tags.value = '';
+          if (ingestTagFromAccountSelect) ingestTagFromAccountSelect.value = '';
+          if (hasPdf) form.file.value = '';
+          if (submitBtn) submitBtn.disabled = false;
+        } catch (err) {
+          msg.textContent = 'Request failed: ' + err.message;
+          msg.className = 'message error';
+          msg.hidden = false;
+          if (submitBtn) submitBtn.disabled = false;
+        }
+      });
+
+      // Ask form
+      function refreshDocsSelect() {
+        const select = document.getElementById('ask-doc_id');
+        fetch(getApiBase() + '/documents')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            const docs = data.documents || [];
+            const keep = select.querySelector('option[value=""]');
+            select.innerHTML = '';
+            select.appendChild(keep);
+            docs.forEach(function (d) {
+              const opt = document.createElement('option');
+              opt.value = d.doc_id;
+              opt.textContent = d.title || d.doc_id;
+              select.appendChild(opt);
+            });
+            const tagSet = {};
+            docs.forEach(function (d) {
+              (d.tags || []).forEach(function (t) {
+                if (t && t.trim()) tagSet[t.trim()] = true;
+              });
+            });
+            const tags = Object.keys(tagSet).sort();
+            if (tags.length) {
+              const sep = document.createElement('option');
+              sep.disabled = true;
+              sep.textContent = '— By tag —';
+              select.appendChild(sep);
+              tags.forEach(function (tag) {
+                const opt = document.createElement('option');
+                opt.value = 'tag:' + tag;
+                opt.textContent = 'Tag: ' + tag;
+                select.appendChild(opt);
+              });
+            }
+          })
+          .catch(function () {});
+      }
+      refreshDocsSelect();
+
+      document.getElementById('form-ask').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const msg = document.getElementById('ask-message');
+        const answerBlock = document.getElementById('ask-answer');
+        const answerText = document.getElementById('ask-answer-text');
+        const askLoading = document.getElementById('ask-loading');
+        const form = e.target;
+        const submitBtn = form.querySelector('button[type="submit"]');
+        msg.hidden = true;
+        answerBlock.hidden = true;
+        askLoading.hidden = false;
+        if (submitBtn) submitBtn.disabled = true;
+        const body = {
+          question: form.question.value.trim(),
+          top_k: 5
+        };
+        const limitVal = (form.doc_id && form.doc_id.value) ? form.doc_id.value.trim() : '';
+        if (limitVal) {
+          if (limitVal.indexOf('tag:') === 0) {
+            body.tag = limitVal.slice(4);
+          } else {
+            body.doc_id = limitVal;
+          }
+        }
+        try {
+          const res = await fetch(getApiBase() + '/ask/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(function () { return {}; });
+            msg.textContent = data.detail || res.statusText || 'Ask failed';
+            msg.className = 'message error';
+            msg.hidden = false;
+            askLoading.hidden = true;
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+          answerText.textContent = '';
+          answerBlock.hidden = false;
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              if (!line.trim()) continue;
+              try {
+                const obj = JSON.parse(line);
+                if (obj.error) {
+                  msg.textContent = obj.error;
+                  msg.className = 'message error';
+                  msg.hidden = false;
+                  break;
+                }
+                if (obj.answer !== undefined) {
+                  answerText.textContent = obj.answer;
+                }
+                if (obj.delta !== undefined) {
+                  answerText.textContent += obj.delta;
+                  askLoading.hidden = true;
+                }
+                if (obj.done) break;
+              } catch (err) {
+                console.log('MYDEBUG →', 'stream line parse error', err, line);
+              }
+            }
+          }
+          askLoading.hidden = true;
+          if (submitBtn) submitBtn.disabled = false;
+        } catch (err) {
+          msg.textContent = 'Request failed: ' + err.message;
+          msg.className = 'message error';
+          msg.hidden = false;
+          askLoading.hidden = true;
+          if (submitBtn) submitBtn.disabled = false;
+        }
+      });
+
+      // Status panel
+      const btnStatus = document.getElementById('btn-status');
+      const statusLoading = document.getElementById('status-loading');
+      const statusResult = document.getElementById('status-result');
+      const statusBadge = document.getElementById('status-badge');
+      const statusMemo = document.getElementById('status-memo');
+      btnStatus.addEventListener('click', async function () {
+        statusResult.hidden = true;
+        statusLoading.hidden = false;
+        try {
+          const res = await fetch(getApiBase() + '/decision');
+          const data = await res.json().catch(function () { return {}; });
+          statusLoading.hidden = true;
+          if (!res.ok) {
+            statusBadge.textContent = data.detail || res.statusText || 'Failed';
+            statusBadge.className = 'message error';
+            statusResult.hidden = false;
+            return;
+          }
+          statusBadge.textContent = data.status === 'no_action_required' ? 'No action required' : 'Actionable';
+          statusBadge.className = 'message ' + (data.status === 'no_action_required' ? 'success' : 'error');
+          statusMemo.textContent = data.memo || '—';
+          statusResult.hidden = false;
+        } catch (err) {
+          statusLoading.hidden = true;
+          statusBadge.textContent = 'Request failed: ' + err.message;
+          statusBadge.className = 'message error';
+          statusResult.hidden = false;
+        }
+      });
+
+      // Past advice panel
+      const btnPast = document.getElementById('btn-past');
+      const pastLoading = document.getElementById('past-loading');
+      const pastEmpty = document.getElementById('past-empty');
+      const pastList = document.getElementById('past-list');
+      btnPast.addEventListener('click', async function () {
+        pastList.innerHTML = '';
+        pastEmpty.hidden = true;
+        pastLoading.hidden = false;
+        try {
+          const res = await fetch(getApiBase() + '/decision/history');
+          const items = await res.json().catch(function () { return []; });
+          pastLoading.hidden = true;
+          if (!items || items.length === 0) {
+            pastEmpty.hidden = false;
+            return;
+          }
+          items.forEach(function (item) {
+            const li = document.createElement('li');
+            li.className = 'doc-item';
+            const dateStr = item.evaluated_at ? new Date(item.evaluated_at * 1000).toLocaleString() : '—';
+            li.innerHTML =
+              '<span class="doc-id">' + escapeHtml(item.status) + '</span>' +
+              '<div class="doc-meta">' + escapeHtml(dateStr) + '</div>' +
+              (item.memo ? '<div class="doc-snippet">' + escapeHtml(item.memo) + '</div>' : '');
+            pastList.appendChild(li);
+          });
+        } catch (err) {
+          pastLoading.hidden = true;
+          pastEmpty.textContent = 'Failed to load history.';
+          pastEmpty.hidden = false;
+        }
+      });
+
+      // --- Data tab: Accounts, Positions, Obligations ---
+      var accountsCache = [];
+      var positionsCache = [];
+      var obligationsCache = [];
+
+      function loadAccounts() {
+        var loading = document.getElementById('accounts-loading');
+        var empty = document.getElementById('accounts-empty');
+        var table = document.getElementById('accounts-table');
+        var tbody = document.getElementById('accounts-tbody');
+        loading.hidden = false;
+        empty.hidden = true;
+        table.hidden = true;
+        fetch(getApiBase() + '/accounts')
+          .then(function (r) { return r.json(); })
+          .then(function (list) {
+            accountsCache = list || [];
+            loading.hidden = true;
+            if (list.length === 0) {
+              empty.hidden = false;
+              return;
+            }
+            tbody.innerHTML = '';
+            list.forEach(function (a) {
+              var tr = document.createElement('tr');
+              tr.innerHTML =
+                '<td>' + escapeHtml(a.name) + '</td>' +
+                '<td>' + escapeHtml(a.type || '—') + '</td>' +
+                '<td>' + escapeHtml(a.institution || '—') + '</td>' +
+                '<td class="actions"><button type="button" class="btn-edit" data-account-edit="' + escapeHtml(a.id) + '">Edit</button><button type="button" class="btn-delete" data-account-delete="' + escapeHtml(a.id) + '">Delete</button></td>';
+              tbody.appendChild(tr);
+            });
+            table.hidden = false;
+            tbody.querySelectorAll('[data-account-edit]').forEach(function (b) {
+              b.addEventListener('click', function () { openAccountForm(b.getAttribute('data-account-edit')); });
+            });
+            tbody.querySelectorAll('[data-account-delete]').forEach(function (b) {
+              b.addEventListener('click', function () { deleteAccount(b.getAttribute('data-account-delete')); });
+            });
+          })
+          .catch(function () {
+            loading.hidden = true;
+            empty.textContent = 'Failed to load accounts.';
+            empty.hidden = false;
+          });
+      }
+
+      function loadPositions() {
+        var loading = document.getElementById('positions-loading');
+        var empty = document.getElementById('positions-empty');
+        var table = document.getElementById('positions-table');
+        var tbody = document.getElementById('positions-tbody');
+        loading.hidden = false;
+        empty.hidden = true;
+        table.hidden = true;
+        Promise.all([
+          fetch(getApiBase() + '/positions').then(function (r) { return r.json(); }),
+          fetch(getApiBase() + '/accounts').then(function (r) { return r.json(); })
+        ]).then(function (results) {
+          var list = results[0] || [];
+          var accounts = results[1] || [];
+          var accountNames = {};
+          accounts.forEach(function (a) { accountNames[a.id] = a.name; });
+          positionsCache = list;
+          loading.hidden = true;
+          if (list.length === 0) {
+            empty.hidden = false;
+            return;
+          }
+          tbody.innerHTML = '';
+          list.forEach(function (p) {
+            var principal = p.principal != null ? '$' + Number(p.principal).toLocaleString() : '—';
+            var accountLabel = accountNames[p.account_id] || p.account_id;
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td>' + escapeHtml(accountLabel) + '</td>' +
+                '<td>' + escapeHtml(p.asset_type) + '</td>' +
+                '<td>' + escapeHtml(p.description || '—') + '</td>' +
+                '<td>' + principal + '</td>' +
+                '<td>' + escapeHtml(p.maturity_date || '—') + '</td>' +
+                '<td class="actions"><button type="button" class="btn-edit" data-position-edit="' + escapeHtml(p.id) + '">Edit</button><button type="button" class="btn-delete" data-position-delete="' + escapeHtml(p.id) + '">Delete</button></td>';
+              tbody.appendChild(tr);
+            });
+            table.hidden = false;
+            tbody.querySelectorAll('[data-position-edit]').forEach(function (b) {
+              b.addEventListener('click', function () { openPositionForm(b.getAttribute('data-position-edit')); });
+            });
+            tbody.querySelectorAll('[data-position-delete]').forEach(function (b) {
+              b.addEventListener('click', function () { deletePosition(b.getAttribute('data-position-delete')); });
+            });
+          })
+          .catch(function () {
+            loading.hidden = true;
+            empty.textContent = 'Failed to load positions.';
+            empty.hidden = false;
+          });
+      }
+
+      function loadObligations() {
+        var loading = document.getElementById('obligations-loading');
+        var empty = document.getElementById('obligations-empty');
+        var table = document.getElementById('obligations-table');
+        var tbody = document.getElementById('obligations-tbody');
+        loading.hidden = false;
+        empty.hidden = true;
+        table.hidden = true;
+        fetch(getApiBase() + '/obligations')
+          .then(function (r) { return r.json(); })
+          .then(function (list) {
+            obligationsCache = list || [];
+            loading.hidden = true;
+            if (list.length === 0) {
+              empty.hidden = false;
+              return;
+            }
+            tbody.innerHTML = '';
+            list.forEach(function (o) {
+              var amount = o.amount_estimate != null ? '$' + Number(o.amount_estimate).toLocaleString() : '—';
+              var tr = document.createElement('tr');
+              tr.innerHTML =
+                '<td>' + escapeHtml(o.description) + '</td>' +
+                '<td>' + escapeHtml(o.due_date) + '</td>' +
+                '<td>' + amount + '</td>' +
+                '<td>' + escapeHtml(o.priority || '—') + '</td>' +
+                '<td class="actions"><button type="button" class="btn-edit" data-obligation-edit="' + escapeHtml(o.id) + '">Edit</button><button type="button" class="btn-delete" data-obligation-delete="' + escapeHtml(o.id) + '">Delete</button></td>';
+              tbody.appendChild(tr);
+            });
+            table.hidden = false;
+            tbody.querySelectorAll('[data-obligation-edit]').forEach(function (b) {
+              b.addEventListener('click', function () { openObligationForm(b.getAttribute('data-obligation-edit')); });
+            });
+            tbody.querySelectorAll('[data-obligation-delete]').forEach(function (b) {
+              b.addEventListener('click', function () { deleteObligation(b.getAttribute('data-obligation-delete')); });
+            });
+          })
+          .catch(function () {
+            loading.hidden = true;
+            empty.textContent = 'Failed to load obligations.';
+            empty.hidden = false;
+          });
+      }
+
+      var dataFormInline = document.getElementById('data-form-inline');
+      var dataFormTitle = document.getElementById('data-form-title');
+      var dataFormFields = document.getElementById('data-form-fields');
+      var dataForm = document.getElementById('data-form');
+      var dataFormMessage = document.getElementById('data-form-message');
+      var dataFormMode = null; // 'account-create' | 'account-edit' | 'position-create' | ...
+      var dataFormEditId = null;
+
+      function showDataFormMessage(text, isError) {
+        dataFormMessage.textContent = text;
+        dataFormMessage.className = 'message ' + (isError ? 'error' : 'success');
+        dataFormMessage.hidden = false;
+      }
+      function hideDataFormMessage() {
+        dataFormMessage.hidden = true;
+      }
+
+      function appendDocumentIdSelect(parentEl, selectedValue, hintText) {
+        var label = document.createElement('label');
+        label.setAttribute('for', 'data-field-document_id');
+        label.textContent = 'Document ID';
+        parentEl.appendChild(label);
+        var select = document.createElement('select');
+        select.id = 'data-field-document_id';
+        select.name = 'document_id';
+        select.innerHTML = '<option value="">(No document)</option>';
+        parentEl.appendChild(select);
+        if (hintText) {
+          var hint = document.createElement('span');
+          hint.className = 'field-hint';
+          hint.textContent = hintText;
+          parentEl.appendChild(hint);
+        }
+        fetch(getApiBase() + '/documents')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var docs = data.documents || [];
+            docs.forEach(function (d) {
+              var opt = document.createElement('option');
+              opt.value = d.doc_id;
+              opt.textContent = d.title || d.doc_id;
+              select.appendChild(opt);
+            });
+            select.value = selectedValue || '';
+          })
+          .catch(function () {
+            select.innerHTML = '<option value="">(No document)</option>';
+          });
+      }
+
+      function openAccountForm(accountId) {
+        dataFormMode = accountId ? 'account-edit' : 'account-create';
+        dataFormEditId = accountId || null;
+        dataFormTitle.textContent = accountId ? 'Edit account' : 'New account';
+        var fields = [
+          { name: 'name', label: 'Name *', type: 'text', value: '', required: true },
+          { name: 'type', label: 'Type', type: 'text', value: '' },
+          { name: 'institution', label: 'Institution', type: 'text', value: '', hint: "Institution is the bank, credit union, or brokerage (e.g. 'Fairwinds Credit Union', 'Vanguard'). Optional — mainly for grouping and reference." }
+        ];
+        if (accountId) {
+          var a = accountsCache.find(function (x) { return x.id === accountId; });
+          if (a) {
+            fields[0].value = a.name;
+            fields[1].value = a.type || '';
+            fields[2].value = a.institution || '';
+          }
+        }
+        renderDataFormFields(fields);
+        hideDataFormMessage();
+        dataFormInline.hidden = false;
+      }
+
+      function openPositionForm(positionId) {
+        dataFormMode = positionId ? 'position-edit' : 'position-create';
+        dataFormEditId = positionId || null;
+        dataFormTitle.textContent = positionId ? 'Edit position' : 'New position';
+        var accountIdValue = '';
+        var assetTypeValue = '';
+        var descValue = '';
+        var principalValue = '';
+        var rateValue = '';
+        var maturityValue = '';
+        var docIdValue = '';
+        if (positionId) {
+          var p = positionsCache.find(function (x) { return x.id === positionId; });
+          if (p) {
+            accountIdValue = p.account_id || '';
+            assetTypeValue = p.asset_type || '';
+            descValue = p.description || '';
+            principalValue = p.principal != null ? p.principal : '';
+            rateValue = p.rate_apr != null ? p.rate_apr : '';
+            maturityValue = p.maturity_date || '';
+            docIdValue = p.document_id || '';
+          }
+        }
+        if (positionId) {
+          var fields = [
+            { name: 'account_id', label: 'Account ID *', type: 'text', value: accountIdValue, required: true, disabled: true },
+            { name: 'asset_type', label: 'Asset type *', type: 'text', value: assetTypeValue, required: true, disabled: true },
+            { name: 'description', label: 'Description', type: 'text', value: descValue },
+            { name: 'principal', label: 'Principal', type: 'number', value: principalValue, step: '0.01' },
+            { name: 'rate_apr', label: 'Rate APR', type: 'number', value: rateValue, step: '0.01' },
+            { name: 'maturity_date', label: 'Maturity date (YYYY-MM-DD)', type: 'text', value: maturityValue }
+          ];
+          renderDataFormFields(fields);
+        } else {
+          dataFormFields.innerHTML = '';
+          var labelAcc = document.createElement('label');
+          labelAcc.setAttribute('for', 'data-field-account_id');
+          labelAcc.textContent = 'Account *';
+          dataFormFields.appendChild(labelAcc);
+          var selectAcc = document.createElement('select');
+          selectAcc.id = 'data-field-account_id';
+          selectAcc.name = 'account_id';
+          selectAcc.required = true;
+          selectAcc.innerHTML = '<option value="">Loading…</option>';
+          dataFormFields.appendChild(selectAcc);
+          var hintAcc = document.createElement('span');
+          hintAcc.className = 'field-hint';
+          hintAcc.textContent = 'Select the account at your institution where this position is held (create accounts first if needed).';
+          dataFormFields.appendChild(hintAcc);
+          fetch(getApiBase() + '/accounts').then(function (r) { return r.json(); }).then(function (accounts) {
+            selectAcc.innerHTML = '<option value="">Select account</option>';
+            (accounts || []).forEach(function (a) {
+              var opt = document.createElement('option');
+              opt.value = a.id;
+              opt.textContent = a.name + (a.institution ? ' (' + a.institution + ')' : '');
+              selectAcc.appendChild(opt);
+            });
+          });
+          var fieldsRest = [
+            { name: 'asset_type', label: 'Asset type *', type: 'text', value: '', required: true },
+            { name: 'description', label: 'Description', type: 'text', value: '' },
+            { name: 'principal', label: 'Principal', type: 'number', value: '', step: '0.01' },
+            { name: 'rate_apr', label: 'Rate APR', type: 'number', value: '', step: '0.01' },
+            { name: 'maturity_date', label: 'Maturity date (YYYY-MM-DD)', type: 'text', value: '' }
+          ];
+          fieldsRest.forEach(function (f) {
+            var label = document.createElement('label');
+            label.setAttribute('for', 'data-field-' + f.name);
+            label.textContent = f.label;
+            dataFormFields.appendChild(label);
+            var input = document.createElement('input');
+            input.id = 'data-field-' + f.name;
+            input.name = f.name;
+            input.type = f.type || 'text';
+            input.value = f.value != null ? f.value : '';
+            if (f.required) input.required = true;
+            if (f.step) input.step = f.step;
+            dataFormFields.appendChild(input);
+          });
+          appendDocumentIdSelect(dataFormFields, '', 'Used to link documents to this position.');
+        }
+        hideDataFormMessage();
+        dataFormInline.hidden = false;
+      }
+
+      function openObligationForm(obligationId) {
+        dataFormMode = obligationId ? 'obligation-edit' : 'obligation-create';
+        dataFormEditId = obligationId || null;
+        dataFormTitle.textContent = obligationId ? 'Edit obligation' : 'New obligation';
+        var fields = [
+          { name: 'description', label: 'Description *', type: 'text', value: '', required: true },
+          { name: 'due_date', label: 'Due date *', type: 'text', value: '', required: true },
+          { name: 'amount_estimate', label: 'Amount estimate', type: 'number', value: '', step: '0.01' },
+          { name: 'priority', label: 'Priority', type: 'text', value: '' }
+        ];
+        if (obligationId) {
+          var o = obligationsCache.find(function (x) { return x.id === obligationId; });
+          if (o) {
+            fields[0].value = o.description || '';
+            fields[1].value = o.due_date || '';
+            fields[2].value = o.amount_estimate != null ? o.amount_estimate : '';
+            fields[3].value = o.priority || '';
+          }
+        }
+        if (!obligationId) {
+          fields.push({ name: 'document_id', label: 'Document ID', type: 'text', value: '', hint: 'Used to link documents to this obligation.' });
+        }
+        renderDataFormFields(fields);
+        hideDataFormMessage();
+        dataFormInline.hidden = false;
+      }
+
+      function renderDataFormFields(fields) {
+        dataFormFields.innerHTML = '';
+        fields.forEach(function (f) {
+          if (f.name === 'document_id' && (f.type === 'document_select' || f.type === 'text')) {
+            appendDocumentIdSelect(dataFormFields, f.value != null ? f.value : '', f.hint || '');
+            return;
+          }
+          var label = document.createElement('label');
+          label.setAttribute('for', 'data-field-' + f.name);
+          label.textContent = f.label;
+          dataFormFields.appendChild(label);
+          var input = document.createElement('input');
+          input.id = 'data-field-' + f.name;
+          input.name = f.name;
+          input.type = f.type || 'text';
+          input.value = f.value != null ? f.value : '';
+          if (f.required) input.required = true;
+          if (f.step) input.step = f.step;
+          if (f.disabled) input.disabled = true;
+          dataFormFields.appendChild(input);
+          if (f.hint) {
+            var hint = document.createElement('span');
+            hint.className = 'field-hint';
+            hint.textContent = f.hint;
+            dataFormFields.appendChild(hint);
+          }
+        });
+      }
+
+      dataForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        hideDataFormMessage();
+        var fd = new FormData(dataForm);
+        function get(name) {
+          var el = dataForm.querySelector('[name="' + name + '"]');
+          return el ? (el.value || '').trim() : '';
+        }
+        function getNum(name) {
+          var v = get(name);
+          return v === '' ? null : parseFloat(v);
+        }
+
+        if (dataFormMode === 'account-create') {
+          try {
+            var res = await fetch(getApiBase() + '/accounts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: get('name'), type: get('type') || null, institution: get('institution') || null })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+              showDataFormMessage(data.detail || res.statusText || 'Failed', true);
+              return;
+            }
+            showDataFormMessage('Account created.');
+            loadAccounts();
+            setTimeout(function () { dataFormInline.hidden = true; }, 800);
+          } catch (err) {
+            showDataFormMessage('Request failed: ' + err.message, true);
+          }
+          return;
+        }
+        if (dataFormMode === 'account-edit') {
+          try {
+            var a = accountsCache.find(function (x) { return x.id === dataFormEditId; });
+            var res = await fetch(getApiBase() + '/accounts/' + encodeURIComponent(dataFormEditId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: get('name'), type: get('type') || null, institution: get('institution') || null, document_id: (a && a.document_id) || null })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+              showDataFormMessage(data.detail || res.statusText || 'Failed', true);
+              return;
+            }
+            showDataFormMessage('Account updated.');
+            loadAccounts();
+            setTimeout(function () { dataFormInline.hidden = true; }, 800);
+          } catch (err) {
+            showDataFormMessage('Request failed: ' + err.message, true);
+          }
+          return;
+        }
+        if (dataFormMode === 'position-create') {
+          try {
+            var res = await fetch(getApiBase() + '/positions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                account_id: get('account_id'),
+                asset_type: get('asset_type'),
+                description: get('description') || null,
+                principal: getNum('principal'),
+                rate_apr: getNum('rate_apr'),
+                maturity_date: get('maturity_date') || null,
+                document_id: get('document_id') || null
+              })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+              showDataFormMessage(data.detail || res.statusText || 'Failed', true);
+              return;
+            }
+            showDataFormMessage('Position created.');
+            loadPositions();
+            loadAccounts();
+            setTimeout(function () { dataFormInline.hidden = true; }, 800);
+          } catch (err) {
+            showDataFormMessage('Request failed: ' + err.message, true);
+          }
+          return;
+        }
+        if (dataFormMode === 'position-edit') {
+          try {
+            var p = positionsCache.find(function (x) { return x.id === dataFormEditId; });
+            var res = await fetch(getApiBase() + '/positions/' + encodeURIComponent(dataFormEditId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                description: get('description') || null,
+                principal: getNum('principal'),
+                rate_apr: getNum('rate_apr'),
+                maturity_date: get('maturity_date') || null,
+                document_id: (p && p.document_id) || null
+              })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+              showDataFormMessage(data.detail || res.statusText || 'Failed', true);
+              return;
+            }
+            showDataFormMessage('Position updated.');
+            loadPositions();
+            setTimeout(function () { dataFormInline.hidden = true; }, 800);
+          } catch (err) {
+            showDataFormMessage('Request failed: ' + err.message, true);
+          }
+          return;
+        }
+        if (dataFormMode === 'obligation-create') {
+          try {
+            var res = await fetch(getApiBase() + '/obligations', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                description: get('description'),
+                due_date: get('due_date'),
+                amount_estimate: getNum('amount_estimate'),
+                priority: get('priority') || null,
+                document_id: get('document_id') || null
+              })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+              showDataFormMessage(data.detail || res.statusText || 'Failed', true);
+              return;
+            }
+            showDataFormMessage('Obligation created.');
+            loadObligations();
+            setTimeout(function () { dataFormInline.hidden = true; }, 800);
+          } catch (err) {
+            showDataFormMessage('Request failed: ' + err.message, true);
+          }
+          return;
+        }
+        if (dataFormMode === 'obligation-edit') {
+          try {
+            var o = obligationsCache.find(function (x) { return x.id === dataFormEditId; });
+            var res = await fetch(getApiBase() + '/obligations/' + encodeURIComponent(dataFormEditId), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                description: get('description') || null,
+                due_date: get('due_date') || null,
+                amount_estimate: getNum('amount_estimate'),
+                priority: get('priority') || null,
+                document_id: (o && o.document_id) || null
+              })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+              showDataFormMessage(data.detail || res.statusText || 'Failed', true);
+              return;
+            }
+            showDataFormMessage('Obligation updated.');
+            loadObligations();
+            setTimeout(function () { dataFormInline.hidden = true; }, 800);
+          } catch (err) {
+            showDataFormMessage('Request failed: ' + err.message, true);
+          }
+        }
+      });
+
+      document.getElementById('data-form-cancel').addEventListener('click', function () {
+        dataFormInline.hidden = true;
+      });
+
+      document.getElementById('btn-add-account').addEventListener('click', function () { openAccountForm(null); });
+      document.getElementById('btn-add-position').addEventListener('click', function () { openPositionForm(null); });
+      document.getElementById('btn-add-obligation').addEventListener('click', function () { openObligationForm(null); });
+
+      function deleteAccount(id) {
+        if (!confirm('Delete this account? Any positions in it will also be deleted.')) return;
+        fetch(getApiBase() + '/accounts/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function (res) {
+            if (res.ok) loadAccounts();
+            else res.json().then(function (d) { alert(d.detail || 'Delete failed'); });
+          })
+          .catch(function (err) { alert('Request failed: ' + err.message); });
+      }
+      function deletePosition(id) {
+        if (!confirm('Delete this position?')) return;
+        fetch(getApiBase() + '/positions/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function (res) {
+            if (res.ok) loadPositions();
+            else res.json().then(function (d) { alert(d.detail || 'Delete failed'); });
+          })
+          .catch(function (err) { alert('Request failed: ' + err.message); });
+      }
+      function deleteObligation(id) {
+        if (!confirm('Delete this obligation?')) return;
+        fetch(getApiBase() + '/obligations/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function (res) {
+            if (res.ok) loadObligations();
+            else res.json().then(function (d) { alert(d.detail || 'Delete failed'); });
+          })
+          .catch(function (err) { alert('Request failed: ' + err.message); });
+      }
+
+      // When switching to Data tab, ensure current section is loaded
+      tabButtons.forEach(function (btn) {
+        if (btn.getAttribute('data-tab') === 'data') {
+          btn.addEventListener('click', function () {
+            var section = localStorage.getItem(dataSectionKey) || 'accounts';
+            setDataSection(section);
+          });
+        }
+      });
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+      }
+    })();
+  </script>
+</body>
+</html>

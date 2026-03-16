@@ -1,0 +1,33 @@
+# Finelly: Ollama (LLM + embeddings) + app. No .env required for default (SQLite + local Ollama).
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: finelly-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  finelly:
+    build: .
+    container_name: finelly-app
+    ports:
+      - "8000:8000"
+    env_file: - .env
+    environment:
+      - EMBED_BASE_URL=http://ollama:11434
+      - EMBED_MODEL=nomic-embed-text
+      - LLM_BASE_URL=http://ollama:11434
+      - LLM_MODEL=qwen3.5:2b
+      - LLAVA_MODEL=qwen2.5vl:7b
+      - DATABASE_PATH=/data/verbiage.db
+    volumes:
+      - finelly_data:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  finelly_data:
