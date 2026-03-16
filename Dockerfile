@@ -1,4 +1,4 @@
-# Finelly app image: Python + deps + app + static files
+# Verbiage app image: Python + deps + app + static files
 FROM python:3.12-slim
 
 WORKDIR /app

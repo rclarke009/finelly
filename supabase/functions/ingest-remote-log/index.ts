@@ -1,6 +1,6 @@
 // Supabase Edge Function: accept POST with sanitized log payload, validate, insert into remote_log_events.
 // Deploy: supabase functions deploy ingest-remote-log
-// Optional: set REMOTE_LOG_SECRET in Supabase secrets; finelly sends it as X-Remote-Log-Secret.
+// Optional: set REMOTE_LOG_SECRET in Supabase secrets; Verbiage sends it as X-Remote-Log-Secret.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 

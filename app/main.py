@@ -676,27 +676,44 @@ async def ask(request: Request, ask_request: AskRequest):
         return AskResponse(answer=answer, top_chunks=top_chunks)
 
 
-async def _stream_ask_generator(prompt: str, top_chunks: list):
+async def _stream_ask_generator(prompt: str, top_chunks: list, stream_start_time: float | None = None):
     """Yield NDJSON lines: first line has top_chunks, then deltas from LLM, then done."""
+    t0 = stream_start_time if stream_start_time is not None else time.perf_counter()
+    t_llm_start = time.perf_counter()
+    logger.info("Ask/stream: generator started, LLM stream starting")
     meta = {"top_chunks": [c.model_dump() if hasattr(c, "model_dump") else c for c in top_chunks]}
     yield json.dumps(meta) + "\n"
+    first_delta = True
     try:
         async for delta in llm_client.answer_with_context_stream(prompt):
+            if first_delta:
+                first_delta_ms = _elapsed_ms(t_llm_start)
+                logger.info("Ask/stream: first LLM delta in %d ms", first_delta_ms)
+                first_delta = False
             yield json.dumps({"delta": delta}) + "\n"
     except Exception:
         yield json.dumps({"error": "LLM stream failed"}) + "\n"
+    llm_ms = _elapsed_ms(t_llm_start)
+    total_ms = _elapsed_ms(t0)
+    logger.info("Ask/stream: LLM stream done in %d ms, total=%d ms", llm_ms, total_ms)
     yield json.dumps({"done": True}) + "\n"
 
 
 @app.post("/ask/stream")
 async def ask_stream(request: Request, ask_request: AskRequest):
     """RAG same as /ask but streams the LLM response as NDJSON: first line = {top_chunks}, then {delta}, then {done}."""
+    t0 = time.perf_counter()
+    question_preview = (ask_request.question or "")[:80]
+    logger.info("Ask/stream: start question=%s", question_preview)
     with sqlite3.connect(request.app.state.db_path) as conn:
         rate_limiter = request.app.state.rate_limiter
         embedder = HttpEmbedder()
         query_vectors = await embedder.embed_many([ask_request.question])
         query_vec = query_vectors[0]
+        embed_ms = _elapsed_ms(t0)
+        logger.info("Ask/stream: embedding done in %d ms", embed_ms)
 
+        t1 = time.perf_counter()
         filter_doc_ids = None
         if ask_request.doc_ids:
             filter_doc_ids = ask_request.doc_ids
@@ -710,12 +727,18 @@ async def ask_stream(request: Request, ask_request: AskRequest):
             else ask_request.top_k
         )
         top_chunks = retrieve_top_k(conn, query_vec, initial_k, doc_id=None, doc_ids=filter_doc_ids)
+        retrieval_ms = _elapsed_ms(t1)
+        logger.info("Ask/stream: retrieval done in %d ms (%d chunks)", retrieval_ms, len(top_chunks))
 
         if RERANK_ENABLED and top_chunks:
+            t_rerank = time.perf_counter()
             top_chunks = rerank(ask_request.question, top_chunks, ask_request.top_k)
+            rerank_ms = _elapsed_ms(t_rerank)
+            logger.info("Ask/stream: re-rank done in %d ms (%d chunks)", rerank_ms, len(top_chunks))
         elif len(top_chunks) > ask_request.top_k:
             top_chunks = top_chunks[: ask_request.top_k]
 
+        t2 = time.perf_counter()
         MAX_CONTEXT_CHARS = 8000
         context_parts = []
         total_len = 0
@@ -732,12 +755,17 @@ async def ask_stream(request: Request, ask_request: AskRequest):
             context_parts.append(block)
             total_len += len(block)
         context_str = "\n".join(context_parts) if context_parts else "(No documents or data loaded.)"
+        data_summary_ms = _elapsed_ms(t2)
+        logger.info("Ask/stream: data summary + context build in %d ms (%d chars)", data_summary_ms, len(context_str))
+
         prompt = (
             "Answer using the context below (your data and/or document chunks). If the context doesn't contain enough information, say so.\n\n"
             "Context:\n" + context_str + "\n\n"
             "Question: " + ask_request.question
         )
         if not context_parts or (not top_chunks and not data_summary):
+            total_ms = _elapsed_ms(t0)
+            logger.info("Ask/stream: early return (no context) total=%d ms", total_ms)
             async def no_context_stream():
                 yield json.dumps({
                     "top_chunks": [],
@@ -750,10 +778,14 @@ async def ask_stream(request: Request, ask_request: AskRequest):
                 media_type="application/x-ndjson",
             )
 
+        t3 = time.perf_counter()
         await rate_limiter.acquire()
+        rate_limit_ms = _elapsed_ms(t3)
+        if rate_limit_ms > 0:
+            logger.info("Ask/stream: rate limit wait %d ms", rate_limit_ms)
 
     return StreamingResponse(
-        _stream_ask_generator(prompt, top_chunks),
+        _stream_ask_generator(prompt, top_chunks, stream_start_time=t0),
         media_type="application/x-ndjson",
     )
 
@@ -843,6 +875,10 @@ async def ask_general(request: Request, body: AskGeneralRequest):
     General-path only: templated prompts sent to OpenAI. No RAG, no user docs, no PII.
     Use template + optional amount/term_months; server builds a sanitized prompt.
     """
+    logger.info(
+        "Ask/general: start template=%s amount=%s term_months=%s",
+        body.template, body.amount, body.term_months,
+    )
     if body.template == "cd_rates_summary":
         prompt = "Summarize the current US CD rate environment in 2-3 sentences."
     elif body.template == "cd_advice":
@@ -854,7 +890,9 @@ async def ask_general(request: Request, body: AskGeneralRequest):
         )
     else:
         raise HTTPException(status_code=400, detail="Unknown template")
+    logger.info("Ask/general: prompt (sanitized) length=%d chars", len(prompt))
     answer = await llm_client.answer_openai(prompt)
+    logger.info("Ask/general: done answer_length=%s", len(answer) if answer else 0)
     if answer is None:
         raise HTTPException(
             status_code=503,
@@ -979,9 +1017,11 @@ async def get_decision(request: Request):
     Persists result to decision_history.
     """
     import uuid
+    logger.info("Decision: start")
     with sqlite3.connect(request.app.state.db_path) as conn:
         triggers = evaluate_triggers(conn, persist=True)
         now_ts = int(time.time())
+        logger.info("Decision: triggers evaluated count=%d", len(triggers))
         trigger_list = [
             TriggerEventResponse(
                 id=r[0],
@@ -1011,6 +1051,8 @@ async def get_decision(request: Request):
                 logger.warning("Reference data fetch failed: %s", e)
 
         # OpenAI path: sanitized CD advice per maturity trigger (no PII in prompt)
+        maturity_count = sum(1 for t in triggers if t[1] == "maturity" and t[2] == "position")
+        logger.info("Decision: requesting OpenAI advice for %d maturity trigger(s)", maturity_count)
         openai_advice: list[str] = []
         for t in triggers:
             if t[1] != "maturity" or t[2] != "position":
@@ -1056,6 +1098,7 @@ async def get_decision(request: Request):
         trigger_ids_str = json.dumps([r[0] for r in triggers])
         insert_decision_history(conn, history_id, now_ts, status, memo, trigger_ids_str)
         conn.commit()
+        logger.info("Decision: done status=%s openai_advice_count=%d", status, len(openai_advice))
         return DecisionResponse(
             status=status,
             triggers=trigger_list,

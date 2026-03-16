@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
-FINELY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$FINELY_DIR"
+VERBIAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$VERBIAGE_DIR"
 
 # Start Ollama in background if not already responding
 if ! curl -s -o /dev/null -w "%{http_code}" http://localhost:11434/api/tags 2>/dev/null | grep -q 200; then

@@ -1,6 +1,6 @@
-# Finelly — Overview
+# Verbiage — Overview
 
-Finelly is a **Private Cash & Document Assistant**: it tracks safe-income assets (CDs, money market), ingests financial documents, and provides trigger-based advice (e.g. maturity, obligations due). See **FINANCIAL-ASSISTANT.md** for principles, privacy, and API summary.
+Verbiage is a **Private Cash & Document Assistant**: it tracks safe-income assets (CDs, money market), ingests financial documents, and provides trigger-based advice (e.g. maturity, obligations due). See **FINANCIAL-ASSISTANT.md** for principles, privacy, and API summary.
 
 **Legacy (Verbiage):** The app still supports document ingest + RAG (storm report verbiage). **Ask** now also uses your financial data (accounts, positions, obligations) so you can ask e.g. "What's my total in CDs?" in addition to document questions.
 

@@ -1,5 +1,5 @@
 ; Finelly Windows installer (requires Docker Desktop already installed)
-; Build from installer with: iscc finelly.iss
+; Build from installer with: iscc verbiage.iss
 
 #define MyAppName "Finelly"
 #define MyAppVersion "1.0"

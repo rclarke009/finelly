@@ -1,6 +1,6 @@
-# Finelly — Install instructions
+# Verbiage — Install instructions
 
-Follow these steps once. After that, you’ll start Finelly from the desktop shortcut.
+Follow these steps once. After that, you’ll start Verbiage from the desktop shortcut.
 
 ## Before you start
 
@@ -11,42 +11,42 @@ Follow these steps once. After that, you’ll start Finelly from the desktop sho
 
 ---
 
-## Step 1: Get the Finelly ZIP
+## Step 1: Get the Verbiage ZIP
 
-You should have a file named **Finelly-Portable.zip** (from a download, USB stick, or email).
+You should have a file named **Verbiage-Portable.zip** (from a download, USB stick, or email).
 
 ---
 
 ## Step 2: Unzip it
 
-1. Right-click **Finelly-Portable.zip**.
+1. Right-click **Verbiage-Portable.zip**.
 2. Click **Extract All…**.
 3. Choose a place (e.g. **Desktop** or **Downloads**) and click **Extract**.
-4. You’ll get a new folder named **Finelly** with several files inside, including **Setup.bat**.
+4. You’ll get a new folder named **Verbiage** with several files inside, including **Setup.bat**.
 
 ---
 
 ## Step 3: Run the installer once
 
-1. Open the **Finelly** folder.
+1. Open the **Verbiage** folder.
 2. Double-click **Setup.bat**.
-3. A black window will open and copy files. When it says “Installation complete” and “A Finelly shortcut is on your desktop,” you’re done.
-4. You can close that window. You can also delete the **Finelly** folder you just unzipped if you like; the app is now installed in a different place.
+3. A black window will open and copy files. When it says “Installation complete” and “A Verbiage shortcut is on your desktop,” you’re done.
+4. You can close that window. You can also delete the **Verbiage** folder you just unzipped if you like; the app is now installed in a different place.
 
 ---
 
-## Step 4: Start Finelly
+## Step 4: Start Verbiage
 
 1. Make sure **Docker is running** (Docker icon in the system tray).
-2. Double-click the **Finelly** shortcut on your desktop.
+2. Double-click the **Verbiage** shortcut on your desktop.
 3. A window will open; the first time it may take a few minutes to download some data. When it says “Ready” and opens your browser to **http://localhost:8000/**, you’re in.
 
 ---
 
-## To stop Finelly
+## To stop Verbiage
 
-- Close the black window that opened when you started Finelly, **or**
-- Open **File Explorer**, go to the address bar, type `%LocalAppData%\Finelly`, press Enter, then double-click **Stop Finelly** if there’s a shortcut there (or open a Command Prompt in that folder and run: `docker compose down`).
+- Close the black window that opened when you started Verbiage, **or**
+- Open **File Explorer**, go to the address bar, type `%LocalAppData%\Verbiage`, press Enter, then double-click **Stop Verbiage** if there’s a shortcut there (or open a Command Prompt in that folder and run: `docker compose down`).
 
 ---
 
@@ -56,11 +56,11 @@ You should have a file named **Finelly-Portable.zip** (from a download, USB stic
   → Start **Docker Desktop** from the Start menu and wait until its icon in the system tray shows it’s running. Try the shortcut again.
 
 - **The black window closes too fast**  
-  → Run **Setup.bat** again from the unzipped Finelly folder (or from `%LocalAppData%\Finelly`). It’s safe to run more than once.
+  → Run **Setup.bat** again from the unzipped Verbiage folder (or from `%LocalAppData%\Verbiage`). It’s safe to run more than once.
 
 - **Browser doesn’t open or the page doesn’t load**  
   → Wait a minute and open your browser yourself. Go to: **http://localhost:8000/**
 
 ---
 
-*Finelly runs on your PC. Your data stays in Docker on this computer unless you change settings.*
+*Verbiage runs on your PC. Your data stays in Docker on this computer unless you change settings.*

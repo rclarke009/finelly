@@ -27,7 +27,7 @@ Finelly is a **private financial assistant** that helps manage safe-income asset
 ## Run
 
 ```bash
-cd finelly && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+cd <project-root> && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 # Optional: set DATABASE_PATH, LLM_BASE_URL, EMBED_BASE_URL in .env
 uvicorn app.main:app --reload
 ```

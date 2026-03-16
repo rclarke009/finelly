@@ -58,13 +58,13 @@ Default: `http://localhost:8000`. The same server serves the **web UI** at the r
 
 ## Run with Docker
 
-The simplest way to run Finelly (no Python or Ollama installed on the host) is with Docker. **No .env or secrets are required** for the default setup (SQLite + Ollama in containers).
+The simplest way to run Verbiage (no Python or Ollama installed on the host) is with Docker. **No .env or secrets are required** for the default setup (SQLite + Ollama in containers).
 
 **Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed (Windows, Mac, or Linux).
 
 ### Main path: launcher script
 
-1. Open a terminal in the `finelly` folder (the one that contains `docker-compose.yml`).
+1. Open a terminal in the Verbiage project folder (the one that contains `docker-compose.yml`).
 2. **Windows:** Double-click **`Start.bat`** or run `Start.bat` from a terminal. The script starts the containers, waits for Ollama, pulls the models (one-time), then opens http://localhost:8000/ in your browser.
 3. **Mac/Linux:** Run `./start.sh`. Then open **http://localhost:8000/** in your browser.
 
@@ -75,7 +75,7 @@ First run may take several minutes while models download. Later runs are quick.
 ### Alternative: manual Compose
 
 ```bash
-cd finelly
+# From the project root (folder that contains docker-compose.yml)
 docker compose up -d
 ```
 
@@ -91,7 +91,7 @@ Open **http://localhost:8000/**.
 
 ### Optional: use your own .env
 
-To override defaults (e.g. Supabase, OpenAI, Google Drive), create a `.env` from `.env.example` and add under the `finelly` service in `docker-compose.yml`: `env_file: .env`. Do not commit real secrets to the repo.
+To override defaults (e.g. Supabase, OpenAI, Google Drive), create a `.env` from `.env.example` and add under the `verbiage` service in `docker-compose.yml`: `env_file: .env`. Do not commit real secrets to the repo.
 
 ---
 

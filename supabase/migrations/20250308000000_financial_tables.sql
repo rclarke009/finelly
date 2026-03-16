@@ -1,4 +1,4 @@
--- Finelly: Financial tables (Private Cash Assistant)
+-- Verbiage: Financial tables (Private Cash Assistant)
 -- Run after 20250302000000_phase1_schema.sql
 -- Matches app/db.py financial schema.
 

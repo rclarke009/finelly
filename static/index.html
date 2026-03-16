@@ -195,6 +195,9 @@
     .ingest-create-account-wrap[open] summary { margin-bottom: 0.5rem; }
     .data-form-inline #ingest-create-account-cancel { margin-left: 0.5rem; background: var(--surface); border: 1px solid var(--border); color: var(--text); }
     .data-form-inline #ingest-create-account-cancel:hover { background: var(--bg); }
+    #ask-answer { margin-bottom: 1.5rem; }
+    .section-divider { margin: 1.5rem 0; border: none; border-top: 1px solid var(--border); }
+    .ask-general-wrap { margin-top: 0.5rem; }
   </style>
 </head>
 <body>
@@ -256,6 +259,7 @@
     </section>
 
     <section id="panel-ask" class="panel active">
+      <h3>Document Based Q & A</h3>
       <form id="form-ask">
         <label for="ask-question">Question *</label>
         <textarea id="ask-question" name="question" required placeholder="e.g. What does this document say about early withdrawal? or Summarize the fees and rates."></textarea>
@@ -270,6 +274,32 @@
       <div id="ask-answer" hidden>
         <h3>Answer</h3>
         <div id="ask-answer-text"></div>
+      </div>
+
+      <hr class="section-divider" aria-hidden="true">
+      <div class="ask-general-wrap">
+      <h3>General advice (OpenAI)</h3>
+      <p>Pre-built prompts only; no documents or PII sent.</p>
+      <form id="form-ask-general">
+        <label for="ask-general-template">Template</label>
+        <select id="ask-general-template" name="template">
+          <option value="cd_rates_summary">CD rates summary</option>
+          <option value="cd_advice">CD advice</option>
+        </select>
+        <div id="ask-general-cd-advice-fields">
+          <label for="ask-general-amount">Amount (optional)</label>
+          <input type="number" id="ask-general-amount" name="amount" min="0" step="1000" placeholder="e.g. 10000" />
+          <label for="ask-general-term_months">Term months (optional)</label>
+          <input type="number" id="ask-general-term_months" name="term_months" min="1" max="120" placeholder="e.g. 12" />
+        </div>
+        <button type="submit">Get advice</button>
+      </form>
+      <div id="ask-general-loading" class="message loading" hidden>Working…</div>
+      <div id="ask-general-message" class="message" role="alert" hidden></div>
+      <div id="ask-general-answer" hidden>
+        <h4>Answer</h4>
+        <div id="ask-general-answer-text"></div>
+      </div>
       </div>
     </section>
 
@@ -364,6 +394,10 @@
         <div id="status-badge" class="message"></div>
         <h3>Memo</h3>
         <div id="status-memo"></div>
+        <div id="status-openai-advice" hidden>
+          <h4>OpenAI advice</h4>
+          <ul id="status-openai-advice-list"></ul>
+        </div>
       </div>
     </section>
 
@@ -871,6 +905,60 @@
       }
       refreshDocsSelect();
 
+      // General advice (OpenAI): show/hide cd_advice fields
+      const askGeneralTemplate = document.getElementById('ask-general-template');
+      const askGeneralCdAdviceFields = document.getElementById('ask-general-cd-advice-fields');
+      function toggleGeneralCdAdviceFields() {
+        askGeneralCdAdviceFields.hidden = askGeneralTemplate.value !== 'cd_advice';
+      }
+      askGeneralTemplate.addEventListener('change', toggleGeneralCdAdviceFields);
+      toggleGeneralCdAdviceFields();
+
+      document.getElementById('form-ask-general').addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const form = e.target;
+        const loading = document.getElementById('ask-general-loading');
+        const msg = document.getElementById('ask-general-message');
+        const answerBlock = document.getElementById('ask-general-answer');
+        const answerText = document.getElementById('ask-general-answer-text');
+        const submitBtn = form.querySelector('button[type="submit"]');
+        msg.hidden = true;
+        answerBlock.hidden = true;
+        loading.hidden = false;
+        if (submitBtn) submitBtn.disabled = true;
+        const body = { template: form.template.value };
+        if (form.template.value === 'cd_advice') {
+          const amount = form.amount && form.amount.value.trim() ? parseFloat(form.amount.value) : null;
+          const term = form.term_months && form.term_months.value.trim() ? parseInt(form.term_months.value, 10) : null;
+          if (amount != null && !isNaN(amount)) body.amount = amount;
+          if (term != null && !isNaN(term)) body.term_months = term;
+        }
+        try {
+          const res = await fetch(getApiBase() + '/ask/general', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+          const data = await res.json().catch(function () { return {}; });
+          loading.hidden = true;
+          if (submitBtn) submitBtn.disabled = false;
+          if (!res.ok) {
+            msg.textContent = data.detail || res.statusText || 'Request failed';
+            msg.className = 'message error';
+            msg.hidden = false;
+            return;
+          }
+          answerText.textContent = data.answer || '—';
+          answerBlock.hidden = false;
+        } catch (err) {
+          loading.hidden = true;
+          if (submitBtn) submitBtn.disabled = false;
+          msg.textContent = 'Request failed: ' + err.message;
+          msg.className = 'message error';
+          msg.hidden = false;
+        }
+      });
+
       document.getElementById('form-ask').addEventListener('submit', async function (e) {
         e.preventDefault();
         const msg = document.getElementById('ask-message');
@@ -978,6 +1066,19 @@
           statusBadge.textContent = data.status === 'no_action_required' ? 'No action required' : 'Actionable';
           statusBadge.className = 'message ' + (data.status === 'no_action_required' ? 'success' : 'error');
           statusMemo.textContent = data.memo || '—';
+          const openaiAdviceBlock = document.getElementById('status-openai-advice');
+          const openaiAdviceList = document.getElementById('status-openai-advice-list');
+          if (data.openai_advice && data.openai_advice.length > 0) {
+            openaiAdviceList.innerHTML = '';
+            data.openai_advice.forEach(function (text) {
+              const li = document.createElement('li');
+              li.textContent = text;
+              openaiAdviceList.appendChild(li);
+            });
+            openaiAdviceBlock.hidden = false;
+          } else {
+            openaiAdviceBlock.hidden = true;
+          }
           statusResult.hidden = false;
         } catch (err) {
           statusLoading.hidden = true;
