@@ -72,6 +72,23 @@ For developers or manual Docker use, see **setup_and_testing.md** in the same fo
 
 ---
 
+## Upgrading from an older install (finelly database credentials)
+
+Older Ledgerly builds used Docker Postgres user/database name **`finelly`**. Current builds use **`ledgerly`**. If you upgrade in place, Postgres may fail to start against the old volume.
+
+**Before upgrading:** run **Backup.bat** (or the manual backup steps below) while the old stack still runs.
+
+Then from `%LocalAppData%\Ledgerly`:
+
+```text
+docker compose down -v
+docker compose up -d
+```
+
+The `-v` flag removes the old Postgres volume so Docker creates a fresh **`ledgerly`** database. To reproduce your data, restore from your `.dump` file (see **Restoring on a new or reset PC** below).
+
+---
+
 ## Back up your data (before an upgrade or a new PC)
 
 Your **documents and Ask history** live in the **Postgres** database inside Docker. Models and big downloads are separate; this backup is **only the database** (compact and easy to move).
@@ -96,7 +113,7 @@ If the script says Postgres isn’t running, start Ledgerly from the desktop sho
 3. Run:
 
 ```text
-docker compose exec -T postgres pg_dump -U finelly -d finelly -Fc -f /tmp/ledgerly-backup.dump
+docker compose exec -T postgres pg_dump -U ledgerly -d ledgerly -Fc -f /tmp/ledgerly-backup.dump
 docker compose cp postgres:/tmp/ledgerly-backup.dump .\ledgerly-backup.dump
 docker compose exec -T postgres rm -f /tmp/ledgerly-backup.dump
 ```
@@ -111,7 +128,7 @@ docker compose exec -T postgres rm -f /tmp/ledgerly-backup.dump
 
 ```text
 docker compose cp .\ledgerly-backup.dump postgres:/tmp/ledgerly-restore.dump
-docker compose exec -T postgres pg_restore -U finelly -d finelly --clean --if-exists /tmp/ledgerly-restore.dump
+docker compose exec -T postgres pg_restore -U ledgerly -d ledgerly --clean --if-exists /tmp/ledgerly-restore.dump
 ```
 
 4. Restart Ledgerly (**To stop Ledgerly**, then start from the shortcut again). If anything errors, walk through the steps with your support contact.

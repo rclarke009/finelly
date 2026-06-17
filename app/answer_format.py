@@ -21,10 +21,10 @@ class AnswerChart(BaseModel):
     labels: list[str] = Field(default_factory=list)
     values: list[float] = Field(default_factory=list)
 
-FINELLY_STRUCTURED_MARKER = "\n---FINELLY_STRUCTURED---\n"
+LEDGERLY_STRUCTURED_MARKER = "\n---LEDGERLY_STRUCTURED---\n"
 ANSWER_FORMAT_PROMPT_SUFFIX = (
     "\n\nAfter your answer, on its own line, output exactly:\n"
-    "---FINELLY_STRUCTURED---\n"
+    "---LEDGERLY_STRUCTURED---\n"
     "Then optional JSON with keys tables (array) and charts (array). "
     "Omit the marker if you have no structured data."
 )
@@ -34,11 +34,11 @@ def split_structured(raw: str) -> tuple[str, dict[str, Any] | None]:
     if not raw:
         return "", None
     text = raw.replace("\r\n", "\n")
-    idx = text.rfind(FINELLY_STRUCTURED_MARKER)
+    idx = text.rfind(LEDGERLY_STRUCTURED_MARKER)
     if idx == -1:
         return raw.strip(), None
     body = text[:idx].strip()
-    tail_raw = text[idx + len(FINELLY_STRUCTURED_MARKER) :].strip()
+    tail_raw = text[idx + len(LEDGERLY_STRUCTURED_MARKER) :].strip()
     if not tail_raw:
         return body, None
     try:

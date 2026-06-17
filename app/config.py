@@ -46,10 +46,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
 
 
 def _portable_profile() -> str:
-    return (
-        os.getenv("LEDGERLY_PROFILE", "").strip().lower()
-        or os.getenv("FINELLY_PROFILE", "").strip().lower()
-    )
+    return os.getenv("LEDGERLY_PROFILE", "").strip().lower()
 
 
 def _resolve_llm_model() -> str:

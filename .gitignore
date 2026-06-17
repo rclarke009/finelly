@@ -32,3 +32,6 @@ build/
 *.sqlite
 *.db
 .ledgerly/
+
+# Local ingest sandbox — may contain real financial docs
+to-ingest-test-docs/

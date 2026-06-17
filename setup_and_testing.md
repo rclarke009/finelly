@@ -37,7 +37,7 @@ Large PDF ingests use batched calls to Ollama (`EMBED_BATCH_SIZE`, default 32) w
 
 **One-time setup:** Whoever installs Ledgerly should set **`LLAVA_MODEL`** in `.env` to a vision model that actually runs on this machine (default `llava:7b`; see `.env.example`). On a machine with plenty of RAM, you can switch to a larger model (e.g. `qwen2.5vl:7b`) after `ollama pull`. If Ollama still reports insufficient memory, use a **smaller** vision model from the Ollama library.
 
-**Portable / low-spec profile:** Set **`LEDGERLY_PROFILE=portable`** or **`LEDGERLY_PROFILE=low_spec`** in `.env` (legacy: **`FINELLY_PROFILE`**) and **omit `LLAVA_MODEL`** (or leave it commented) to use the built-in smaller default (`moondream`). Run `ollama pull moondream` once. If you explicitly set `LLAVA_MODEL`, that value always wins.
+**Portable / low-spec profile:** Set **`LEDGERLY_PROFILE=portable`** or **`LEDGERLY_PROFILE=low_spec`** in `.env` and **omit `LLAVA_MODEL`** (or leave it commented) to use the built-in smaller default (`moondream`). Run `ollama pull moondream` once. If you explicitly set `LLAVA_MODEL`, that value always wins.
 
 **Troubleshooting only (admins):** If ingest still fails with Ollama errors about **system memory** or **VRAM**, check that Tesseract OCR is installed so PDFs can use OCR instead of vision; confirm `ollama pull` succeeded for `LLAVA_MODEL`; try a smaller vision model; optionally check `ollama ps` to see which models are loaded. Reducing concurrent heavy GPU use is a last resort, not a daily user workflow.
 
@@ -64,7 +64,7 @@ Copy `.env.example` to `.env` and adjust if needed (e.g. `DATABASE_PATH`, `LLM_B
 
 Set `DATABASE_URL` to the Postgres URI (Project Settings → Database → Connection string; see `supabase_migration.md`). When set, the app uses **Postgres for all API data** and **pgvector** for `/ask` retrieval (no 5k embedding cap; index-backed `ORDER BY embedding <=> query`). Apply Supabase SQL migrations under `supabase/migrations/` in order (phase1 schema, financial tables, then `20250320000000_schema_parity_content_hash_tags.sql` for `content_hash` and `document_tags`). The HNSW index is created by migration / `ensure_postgres_schema`; on very large tables, building it can take time.
 
-Leave `DATABASE_URL` unset to use **SQLite** at `DATABASE_PATH` (default `ledgerly.db` in config). If you already have data in `finelly.db`, set `DATABASE_PATH=finelly.db` in `.env` or rename the file to `ledgerly.db`.
+Leave `DATABASE_URL` unset to use **SQLite** at `DATABASE_PATH` (default `ledgerly.db` in config). If you have an old SQLite file from a prior install named `finelly.db`, rename it to `ledgerly.db` or set `DATABASE_PATH=finelly.db` in `.env`.
 
 ### Hosted Supabase logging (optional; separate from app database)
 

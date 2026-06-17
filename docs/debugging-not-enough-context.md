@@ -62,7 +62,7 @@ Filter mentally (or with `grep`) for `Ask:` / `Ask/stream:` and `chunks=`.
    ```bash
    docker compose logs --tail=100 ollama
    ```
-- **`postgres`**: only needed if you suspect DB connectivity or migrations; the app connects as `finelly@postgres`.
+- **`postgres`**: only needed if you suspect DB connectivity or migrations; the app connects as `ledgerly@postgres`.
    ```bash
    docker compose logs --tail=100 postgres
    ```

@@ -5,13 +5,13 @@ services:
     image: pgvector/pgvector:pg16
     container_name: ledgerly-postgres
     environment:
-      POSTGRES_USER: finelly
-      POSTGRES_PASSWORD: finelly
-      POSTGRES_DB: finelly
+      POSTGRES_USER: ledgerly
+      POSTGRES_PASSWORD: ledgerly
+      POSTGRES_DB: ledgerly
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U finelly -d finelly"]
+      test: ["CMD-SHELL", "pg_isready -U ledgerly -d ledgerly"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -48,9 +48,9 @@ services:
       - EMBED_MODEL=nomic-embed-text
       - LLM_BASE_URL=http://ollama:11434
       - LLM_MODEL=qwen3:8b
-      # LLAVA_MODEL: omit so .env / LEDGERLY_PROFILE (or legacy FINELLY_PROFILE) defaults apply (see app/config.py).
+      # LLAVA_MODEL: omit so .env / LEDGERLY_PROFILE defaults apply (see app/config.py).
       # Internal pgvector DB (overrides DATABASE_URL in .env for Compose). Not exposed outside Docker.
-      - DATABASE_URL=postgresql://finelly:finelly@postgres:5432/finelly
+      - DATABASE_URL=postgresql://ledgerly:ledgerly@postgres:5432/ledgerly
       # In-container URL; do not point at host localhost from .env when using Docker.
       - FINANCE_TOOLS_BASE_URL=http://finance-mcp:8000
       # Observability: enable with the observability Compose profile (see METRICS_ENABLED / LOG_JSON in .env.example).

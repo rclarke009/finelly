@@ -1,5 +1,5 @@
 -- Ledgerly Phase 1: Supabase schema (Postgres + pgvector + RLS)
--- Project: truedb — https://dunxzvbxekxqrfnmtzmj.supabase.co
+-- Project: YOUR_PROJECT_REF — https://YOUR_PROJECT_REF.supabase.co
 -- Run in Supabase Dashboard → SQL Editor (or: supabase db push)
 -- Matches app/db.py with embedding as vector(768) for nomic-embed-text.
 

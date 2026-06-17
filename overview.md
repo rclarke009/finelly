@@ -1,5 +1,7 @@
 # Ledgerly — Overview
 
+See [README.md](README.md) for repo entry and development status.
+
 Ledgerly is a **private cash and document assistant** for your own machine: it helps track **safe-income holdings** (CDs, money markets, and similar), **ingests financial documents** for search and Q&A, and surfaces **trigger-style guidance** (for example, CDs approaching maturity or obligations coming due). See **[FINANCIAL-ASSISTANT.md](FINANCIAL-ASSISTANT.md)** for product principles, privacy stance, and API orientation.
 
 ---

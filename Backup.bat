@@ -11,7 +11,7 @@ if not exist "docker-compose.yml" (
 echo Backing up Ledgerly database...
 echo Make sure Docker is running and Ledgerly has been started at least once (so the database exists).
 
-docker compose exec -T postgres pg_isready -U finelly -d finelly >nul 2>&1
+docker compose exec -T postgres pg_isready -U ledgerly -d ledgerly >nul 2>&1
 if errorlevel 1 (
   echo.
   echo Postgres is not ready. Start Ledgerly first (desktop shortcut), wait until Ready, then run this script again.
@@ -22,7 +22,7 @@ if errorlevel 1 (
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "TS=%%i"
 set "OUT=%USERPROFILE%\Desktop\ledgerly-backup-%TS%.dump"
 
-docker compose exec -T postgres pg_dump -U finelly -d finelly -Fc -f /tmp/ledgerly-backup.dump
+docker compose exec -T postgres pg_dump -U ledgerly -d ledgerly -Fc -f /tmp/ledgerly-backup.dump
 if errorlevel 1 (
   echo pg_dump failed.
   pause

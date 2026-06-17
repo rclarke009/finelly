@@ -1526,14 +1526,14 @@
         return base;
       }
 
-      var FINELLY_STRUCTURED_MARKER = '\n---FINELLY_STRUCTURED---\n';
+      var LEDGERLY_STRUCTURED_MARKER = '\n---LEDGERLY_STRUCTURED---\n';
 
       function stripLedgerlyStructuredTail(raw) {
         if (!raw) return '';
         var t = String(raw).replace(/\r\n/g, '\n');
-        var idx = t.lastIndexOf(FINELLY_STRUCTURED_MARKER);
+        var idx = t.lastIndexOf(LEDGERLY_STRUCTURED_MARKER);
         if (idx !== -1) return t.slice(0, idx).trim();
-        if (t.trim().indexOf('---FINELLY_STRUCTURED---') === 0) {
+        if (t.trim().indexOf('---LEDGERLY_STRUCTURED---') === 0) {
           var nl = t.indexOf('\n');
           return nl === -1 ? '' : t.slice(nl + 1).trim();
         }
