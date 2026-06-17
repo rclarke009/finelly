@@ -1,9 +1,13 @@
-Verbiage: SQLite → Supabase (Postgres + pgvector) migration plan
-Goal: Run verbiage on Supabase: Postgres + pgvector for documents, chunks, and embeddings. Keep existing app behavior (ingest, list docs, ask/RAG) with DB-backed vector search and no 5k cap.
-Current state (reference):
-Schema: documents (doc_id, title, source, created_at), chunks (chunk_id, doc_id, chunk_index, content, start_offset, end_offset), embeddings (chunk_id, model, vector_json TEXT, dim). Indexes on chunks(doc_id), (doc_id, chunk_index).
-Embedding: nomic-embed-text → 768 dimensions (see app/embeddings.py DIM_FOR_MODEL).
-Usage: main.py uses app.state.db_path and sqlite3.connect(request.app.state.db_path) for ingest, list, ask, delete. retrieval.py calls get_embeddings_for_retrieval(conn, doc_id) then scores in Python (5k cap). db.py is the only module that talks to the DB.
+Ledgerly: SQLite → Supabase (Postgres + pgvector) migration plan
+Goal: Run Ledgerly on Supabase: Postgres + pgvector for documents, chunks, and embeddings. Keep existing app behavior (ingest, list docs, ask/RAG) with DB-backed vector search and no 5k cap.
+
+**Implemented in app (when `DATABASE_URL` is set):** `app/main.py` uses `app_db_connection()` (Postgres via psycopg or SQLite from `DATABASE_PATH`). `app/retrieval.py` calls `db_postgres.retrieve_top_k` for pgvector (`<=>`, score `1 - distance`) with no 5k cap; SQLite still uses `get_embeddings_for_retrieval` + in-Python cosine + cap. CRUD is implemented in `app/db_postgres.py` and dispatched from `app/db.py`. On first connect, `ensure_postgres_schema()` creates extension/tables/indexes (including HNSW) if missing—**Supabase-hosted projects** should still apply migrations in `supabase/migrations/` (especially `20250320000000_schema_parity_content_hash_tags.sql` for `content_hash` and `document_tags`).
+
+Current state (reference) — **SQLite default (no `DATABASE_URL`):**
+Schema: documents (incl. `content_hash`), chunks, embeddings (`vector_json TEXT`), `document_tags`, financial tables. Indexes on chunks(doc_id), (doc_id, chunk_index).
+Embedding: nomic-embed-text → 768 dimensions (see `app/embeddings.py`).
+
+**Postgres:** `embeddings.embedding vector(768)`; run migrations for parity with SQLite (`document_tags`, `documents.content_hash`).
 Phase 1 — Supabase project and schema
 Create a Supabase project (supabase.com → New project). Note:
 Project URL (e.g. https://xxxx.supabase.co)
@@ -22,7 +26,7 @@ Add vector index for retrieval. After you have (or will have) rows in embeddings
 Connection: For the FastAPI app you need a Postgres connection string. Use either:
 Direct Postgres: Project Settings → Database → Connection string (URI), e.g. postgresql://postgres.[ref]:[PASSWORD]@aws-0-[region].pooler.supabase.com:6543/postgres. Use this with psycopg2 or asyncpg.
 Supabase client (optional): For REST/Realtime you’d use the JS client; for Python server-side RAG, a direct DB connection is simpler and matches your current “conn” style.
-**Where to set it:** In `verbiage/.env` set `DATABASE_URL=<paste the Postgres URI>`. The app reads it from `app/config.py`. When set, the app will use Postgres instead of SQLite (once Phase 3 is implemented).  
+**Where to set it:** In `Ledgerly/.env` set `DATABASE_URL=<paste the Postgres URI>`. The app reads it from `app/config.py`. When set, the app uses Postgres for all DB access and pgvector for RAG retrieval.  
 **URI vs project URL:** The URI is *not* the project URL you see in the portal (e.g. `https://xxxx.supabase.co`). Go to **Project Settings → Database** and find the **Connection string** section; choose the **URI** format (starts with `postgresql://`). Replace `[YOUR-PASSWORD]` with your database password.
 
 Phase 2 — Config and dependencies
@@ -82,10 +86,10 @@ Required env vars (DATABASE_URL).
 How to run ingest and ask locally against Supabase.
 Optional: how to run the migration script for existing SQLite data.
 Checklist (summary)
-[ ] Supabase project created; pgvector enabled; tables + indexes created (including vector(768) and HNSW).
-[ ] DATABASE_URL in env; config reads it; requirements.txt has Postgres driver.
-[ ] db.py: Postgres connection, DDL, CRUD, and vector search function (top-k by embedding <=>).
-[ ] retrieval.py: Uses DB vector search only; no 5k cap; same retrieve_top_k signature.
-[ ] main.py: Lifespan uses Postgres pool/conn; routes use that conn for all DB work.
-[ ] Optional: migration script SQLite → Supabase; docs updated.
+[ ] Supabase project created; pgvector enabled; tables + indexes created (including vector(768) and HNSW). Apply `20250302000000`, `20250308000000`, `20250320000000` migrations (or rely on `ensure_postgres_schema` for empty local Postgres only).
+[x] DATABASE_URL in env; config reads it; `requirements.txt` includes `psycopg[binary]`.
+[x] `db_postgres.py` + dispatch in `db.py`; vector top-k in `retrieve_top_k` for Postgres.
+[x] `retrieval.py`: Postgres path uses SQL only; no 5k cap; same `retrieve_top_k` signature.
+[x] `main.py`: `DATABASE_URL` → psycopg per request via `app_db_connection`; SQLite uses `DATABASE_PATH`.
+[ ] Optional: migration script SQLite → Supabase for existing data.
 Use this as your guide; implement phase by phase and test ingest + list + ask after each phase. If you want this turned into a SUPABASE-MIGRATION.md (or similar) in the repo, switch to Agent mode and ask to add it.

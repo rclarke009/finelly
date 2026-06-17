@@ -1,6 +1,6 @@
 # Decision status test guide
 
-This guide explains how to test the **Decision status** ("Check status") feature in Finelly. The status is either **No action required** or **Actionable**, depending on your positions and obligations in the next 30 days.
+This guide explains how to test the **Decision status** ("Check status") feature in Ledgerly. The status is either **No action required** or **Actionable**, depending on your positions and obligations in the next 30 days.
 
 ## How it works
 

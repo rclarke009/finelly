@@ -1,6 +1,6 @@
-# Finelly — Private Cash & Document Assistant
+# Ledgerly — Private Cash & Document Assistant
 
-Finelly is a **private financial assistant** that helps manage safe-income assets (CDs, money market) and financial documents. It acts as a source-of-truth tracker, document analysis assistant, and decision-support tool for maturity and liquidity events.
+Ledgerly is a **private financial assistant** that helps manage safe-income assets (CDs, money market) and financial documents. It acts as a source-of-truth tracker, document analysis assistant, and decision-support tool for maturity and liquidity events.
 
 ## Principles
 
@@ -32,4 +32,4 @@ cd <project-root> && python3 -m venv .venv && source .venv/bin/activate && pip i
 uvicorn app.main:app --reload
 ```
 
-Open the UI (e.g. http://localhost:8000). Use **Status** to get current advice and **Past advice** to see history. Add accounts and positions via API or (later) UI forms; then **Ask** can answer questions about your data and documents.
+Open the UI (e.g. http://localhost:8000). **Home** loads maturities and due dates automatically. Add documents under **Add document**, confirm tracking on **Home**, and use **Ask** preset buttons for common questions. Advanced fixes live under **Manage**.

@@ -1,45 +1,50 @@
-# Verbiage — Overview
+# Ledgerly — Overview
 
-Verbiage is a **Private Cash & Document Assistant**: it tracks safe-income assets (CDs, money market), ingests financial documents, and provides trigger-based advice (e.g. maturity, obligations due). See **FINANCIAL-ASSISTANT.md** for principles, privacy, and API summary.
-
-**Legacy (Verbiage):** The app still supports document ingest + RAG (storm report verbiage). **Ask** now also uses your financial data (accounts, positions, obligations) so you can ask e.g. "What's my total in CDs?" in addition to document questions.
+Ledgerly is a **private cash and document assistant** for your own machine: it helps track **safe-income holdings** (CDs, money markets, and similar), **ingests financial documents** for search and Q&A, and surfaces **trigger-style guidance** (for example, CDs approaching maturity or obligations coming due). See **[FINANCIAL-ASSISTANT.md](FINANCIAL-ASSISTANT.md)** for product principles, privacy stance, and API orientation.
 
 ---
 
-## What It Does
+## What it does
 
-- **Ingest** — Store hundreds or thousands of storm damage reports (text + metadata). Chunk, embed, and index for retrieval.
-- **List documents** — See what’s already ingested: titles, doc_id, optional first N characters (snippet) so users know what’s in the system.
-- **Ask** — Describe the current case (symptom, damage type, etc.). The app retrieves similar past report text and uses the LLM to suggest **overview** and **detailed image** verbiage.
+- **Data** — Define **accounts** (per institution), **positions** (individual CDs, funds, etc.), and **obligations** (bills or deadlines). Optional links to ingested documents keep paperwork and numbers aligned.
+- **Ingest** — Upload PDFs or images, or paste text. Content is chunked, embedded with a local model, and stored for retrieval alongside your structured data.
+- **Documents** — Inspect what is in the system: titles, IDs, tags, optional vault paths, and snippets.
+- **Ask** — Ask natural-language questions over **your saved financial data and ingested documents** (RAG + tools as configured). You can limit answers to a single document or tag.
+- **Status / Past advice** — Run decision checks on your positions and obligations and review historical memos (exact behavior depends on your rules and LLM configuration).
 
-Works “forward” (drafting from scratch) or “backward” (rewriting rough notes)—either way, AI turns rough input into report-ready verbiage.
-
----
-
-cd verbiage && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-
-## Architecture (Phase 3 Style)
-
-- **POST /ingest** — Accept a report (e.g. `doc_id`, `title`, `source`, `text`). Chunk, embed chunks, store in SQLite (documents, chunks, embeddings).
-- **GET /documents** — Return a list of ingested documents (e.g. `doc_id`, `title`, `source`, `created_at`, `num_chunks`, and optional `snippet` = first N characters) so users can see what has been loaded.
-- **POST /ask** — Accept a question or prompt (e.g. “This report has [symptom]. Give me overview and detailed image verbiage.”). Embed query → top-k similarity search → LLM with retrieved chunks as context → return suggested verbiage.
-
-Same RAG flow as the learning project; domain = storm damage reports and reusable wording.
+Prior versions of this file described a storm-damage–report demo domain; the **current** focus is personal finance and document assistance as above.
 
 ---
 
-## Tech (Initial)
+## Typical stack (Docker Compose)
 
-- FastAPI, Pydantic, async LLM + embedding client
-- SQLite + chunk/embedding storage (pgvector later if needed)
-- Chunking (e.g. by chars/sentences), cosine similarity retrieval
-- **Data sources:** Ingest from PDF and .docx only (see `code-notes.md` for rationale and implementation).
-- **Models (local, for client-name privacy):** **Llama 3.1 8B** via Ollama for text/RAG (POST /ask); **LLaVA** (Ollama) in the next phase for image → report.
+From the repo root (with Docker running):
+
+```bash
+docker compose up -d
+```
+
+The bundled layout runs the **web app**, **Postgres + pgvector**, **Ollama** (text, embeddings, and vision for scans), and an optional **finance-tools** sidecar. First start may pull **large** container images and AI models—see **[install-instructions.md](install-instructions.md)** (portable) or **[setup_and_testing.md](setup_and_testing.md)** (developers).
+
+Native install without Docker is also supported: Python venv, `pip install -r requirements.txt`, local or remote Ollama for `LLM_*` / `EMBED_*`, and SQLite or Postgres per **[.env.example](.env.example)**.
 
 ---
 
-## Roadmap
+## Architecture (summary)
 
-1. **Phase 3 clone** — Ingest + RAG (POST /ingest, POST /ask) for report text; verbiage-focused prompts. LLM: **Llama 3.1 8B** (Ollama, local).
-2. **Phase 4** — Cache, observability, API key auth. Keep Llama 3.1 8B for text; add **LLaVA** (Ollama) for “look at this job’s images and write report text.”
-3. **Later** — Optional: image-based damage comparison (vision/embeddings) as a separate feature; LLaVA remains the target vision model.
+- **POST /ingest**, **POST /ingest/pdf**, **POST /ingest/image** — Add text or files; chunk → embed → store.
+- **POST /ingest/jobs** — Queue multiple files for background processing (UI uses this for multi-select uploads).
+- **GET /documents** — List ingested documents and metadata.
+- **POST /ask**, **POST /ask/stream** — Retrieve relevant chunks and produce answers (streaming optional).
+- **GET /health** — Liveness for the web process (used by the static UI on load).
+
+Storage: **SQLite** when `DATABASE_URL` is unset (simple local runs), or **Postgres + pgvector** in Compose for production-style setups.
+
+Tech: **FastAPI**, **Pydantic**, async HTTP clients for embeddings and LLM calls; **Ollama** defaults: `qwen3:8b` (text), `nomic-embed-text` (embeddings), vision model from config (e.g. `llava:7b` or a smaller profile default).
+
+---
+
+## Roadmap direction
+
+- Hardening: caching, observability, optional API auth for exposed deployments.
+- Deeper financial tooling and clearer empty states when optional services (e.g. market quotes) are unavailable.

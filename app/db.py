@@ -17,8 +17,19 @@
 
 import sqlite3
 import json
+from typing import Any
 
-def create_db(conn: sqlite3.Connection) -> sqlite3.Connection:
+from app.config import SQLITE_RETRIEVAL_MAX_EMBEDDINGS
+from app.db_connection import is_postgres_conn
+
+
+def create_db(conn: Any) -> Any:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        db_postgres.ensure_postgres_schema(conn)
+        conn.commit()
+        return conn
     #conn = app.state.dbconn    # sqlite3.connect("documentsdb.sqlite")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS documents (
@@ -26,11 +37,28 @@ def create_db(conn: sqlite3.Connection) -> sqlite3.Connection:
             title TEXT,
             source TEXT,
             created_at INTEGER,
-            content_hash TEXT
+            content_hash TEXT,
+            facts_learned TEXT
         )
     """)
     try:
         conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE documents ADD COLUMN facts_learned TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE documents ADD COLUMN original_vault_path TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE documents ADD COLUMN extracted_position TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE documents ADD COLUMN extracted_obligation TEXT")
     except sqlite3.OperationalError:
         pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)")
@@ -97,6 +125,14 @@ def create_db(conn: sqlite3.Connection) -> sqlite3.Connection:
             created_at INTEGER NOT NULL
         )
     """)
+    try:
+        conn.execute("ALTER TABLE positions ADD COLUMN resolved_at INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE obligations ADD COLUMN resolved_at INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trigger_events (
             id TEXT PRIMARY KEY,
@@ -157,15 +193,28 @@ def insert_document(conn,
     title: str | None = None,
     source: str | None = None,
     content_hash: str | None = None,
+    facts_learned: str | None = None,
+    original_vault_path: str | None = None,
     ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_document(
+            conn, doc_id, created_at, title, source, content_hash, facts_learned,
+            original_vault_path,
+        )
     conn.execute(
-        "INSERT INTO documents(doc_id, title, source, created_at, content_hash) VALUES (?,?,?,?,?)",
-        (doc_id, title, source, created_at, content_hash),
+        "INSERT INTO documents(doc_id, title, source, created_at, content_hash, facts_learned, original_vault_path) VALUES (?,?,?,?,?,?,?)",
+        (doc_id, title, source, created_at, content_hash, facts_learned, original_vault_path),
     )
 
 
 def find_doc_id_by_content_hash(conn: sqlite3.Connection, content_hash: str) -> str | None:
     """Return doc_id of an existing document with the same content hash, or None."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.find_doc_id_by_content_hash(conn, content_hash)
     cursor = conn.execute(
         "SELECT doc_id FROM documents WHERE content_hash = ? LIMIT 1",
         (content_hash,),
@@ -182,6 +231,12 @@ def insert_chunk(conn: sqlite3.Connection,
     start_offset: int,
     end_offset: int
     ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_chunk(
+            conn, chunk_id, doc_id, chunk_index, content, start_offset, end_offset
+        )
     conn.execute("INSERT INTO chunks(chunk_id, doc_id, chunk_index, content, start_offset, end_offset) VALUES (?,?,?,?,?,?)", (chunk_id, doc_id, chunk_index, content, start_offset, end_offset),)
     # conn.commit()
 
@@ -191,6 +246,10 @@ def insert_embedding(conn: sqlite3.Connection,
     vector_json: str,
     dim: int
     ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_embedding(conn, chunk_id, model, vector_json, dim)
     conn.execute("INSERT INTO embeddings(chunk_id, model, vector_json, dim) VALUES (?,?,?,?)", (chunk_id, model, vector_json, dim),)
     # conn.commit()
 
@@ -199,10 +258,18 @@ def doc_exist(
     doc_id: str
     )->None:
     '''returns none if doc does not exist.  if it's a duplicate, raises 409'''
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.doc_exist(conn, doc_id)
     cursor = conn.execute("SELECT 1 FROM documents WHERE doc_id = ?", (doc_id,))
     return cursor.fetchone() is not None        # returns True if it finds one?
 
 def get_embeddings_for_retrieval(conn, doc_id=None, doc_ids=None) -> list[tuple]:
+    if is_postgres_conn(conn):
+        raise RuntimeError(
+            "get_embeddings_for_retrieval is SQLite-only; Postgres uses pgvector in retrieve_top_k"
+        )
     sql = """
     SELECT e.chunk_id, c.doc_id, e.vector_json, c.content
     FROM embeddings e
@@ -216,7 +283,11 @@ def get_embeddings_for_retrieval(conn, doc_id=None, doc_ids=None) -> list[tuple]
     elif doc_id is not None:
         cursor = conn.execute(sql + " WHERE c.doc_id = ?", (doc_id,))
     else:
-        cursor = conn.execute(sql)
+        if SQLITE_RETRIEVAL_MAX_EMBEDDINGS > 0:
+            sql += " LIMIT ?"
+            cursor = conn.execute(sql, (SQLITE_RETRIEVAL_MAX_EMBEDDINGS,))
+        else:
+            cursor = conn.execute(sql)
     rows = cursor.fetchall()
     return [
         (chunk_id, doc_id, json.loads(vector_json), content)
@@ -225,15 +296,63 @@ def get_embeddings_for_retrieval(conn, doc_id=None, doc_ids=None) -> list[tuple]
 
 
 def delete_by_doc_id(conn: sqlite3.Connection, doc_id: str) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_by_doc_id(conn, doc_id)
     conn.execute("DELETE FROM embeddings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE doc_id = ?)", (doc_id,))
     conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
     conn.execute("DELETE FROM document_tags WHERE doc_id = ?", (doc_id,))
     conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
-    conn.commit()
+
+
+def delete_positions_by_document_id(conn: sqlite3.Connection, doc_id: str) -> int:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_positions_by_document_id(conn, doc_id)
+    cursor = conn.execute("DELETE FROM positions WHERE document_id = ?", (doc_id,))
+    return cursor.rowcount
+
+
+def delete_obligations_by_document_id(conn: sqlite3.Connection, doc_id: str) -> int:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_obligations_by_document_id(conn, doc_id)
+    cursor = conn.execute("DELETE FROM obligations WHERE document_id = ?", (doc_id,))
+    return cursor.rowcount
+
+
+def clear_accounts_linked_to_document(conn: sqlite3.Connection, doc_id: str) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.clear_accounts_linked_to_document(conn, doc_id)
+    conn.execute("UPDATE accounts SET document_id = NULL WHERE document_id = ?", (doc_id,))
+
+
+def delete_document_cascade(conn: sqlite3.Connection, doc_id: str) -> dict[str, int]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_document_cascade(conn, doc_id)
+    positions_deleted = delete_positions_by_document_id(conn, doc_id)
+    obligations_deleted = delete_obligations_by_document_id(conn, doc_id)
+    clear_accounts_linked_to_document(conn, doc_id)
+    delete_by_doc_id(conn, doc_id)
+    return {
+        "positions_deleted": positions_deleted,
+        "obligations_deleted": obligations_deleted,
+    }
 
 
 def set_document_tags(conn: sqlite3.Connection, doc_id: str, tags: list[str]) -> None:
     """Replace all tags for a document with the given list."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.set_document_tags(conn, doc_id, tags)
     conn.execute("DELETE FROM document_tags WHERE doc_id = ?", (doc_id,))
     for tag in tags:
         tag = (tag or "").strip()
@@ -243,18 +362,63 @@ def set_document_tags(conn: sqlite3.Connection, doc_id: str, tags: list[str]) ->
 
 def get_document_tags(conn: sqlite3.Connection, doc_id: str) -> list[str]:
     """Return list of tag strings for a document."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_document_tags(conn, doc_id)
     cursor = conn.execute("SELECT tag FROM document_tags WHERE doc_id = ? ORDER BY tag", (doc_id,))
     return [row[0] for row in cursor.fetchall()]
 
 
+def get_document_source(conn: sqlite3.Connection, doc_id: str) -> str | None:
+    """Return documents.source for doc_id, or None if missing."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_document_source(conn, doc_id)
+    cursor = conn.execute("SELECT source FROM documents WHERE doc_id = ?", (doc_id,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def get_document_original_vault_path(conn: sqlite3.Connection, doc_id: str) -> str | None:
+    """Return stored vault-relative path for the original copy, if any."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_document_original_vault_path(conn, doc_id)
+    cursor = conn.execute(
+        "SELECT original_vault_path FROM documents WHERE doc_id = ?", (doc_id,)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def update_document_source(conn: sqlite3.Connection, doc_id: str, source: str | None) -> None:
+    """Set documents.source (use None to clear)."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.update_document_source(conn, doc_id, source)
+    conn.execute("UPDATE documents SET source = ? WHERE doc_id = ?", (source, doc_id))
+
+
 def get_doc_ids_by_tag(conn: sqlite3.Connection, tag: str) -> list[str]:
     """Return list of doc_ids that have the given tag."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_doc_ids_by_tag(conn, tag)
     cursor = conn.execute("SELECT doc_id FROM document_tags WHERE tag = ? ORDER BY doc_id", (tag.strip(),))
     return [row[0] for row in cursor.fetchall()]
 
 
 def get_account_ids_by_document_id(conn: sqlite3.Connection, doc_id: str) -> list[str]:
     """Return list of account IDs that have document_id = doc_id."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_account_ids_by_document_id(conn, doc_id)
     cursor = conn.execute("SELECT id FROM accounts WHERE document_id = ? ORDER BY name", (doc_id,))
     return [row[0] for row in cursor.fetchall()]
 
@@ -263,18 +427,43 @@ def set_document_linked_account(
     conn: sqlite3.Connection, doc_id: str, account_id: str | None
 ) -> None:
     """Set which account links to this document. Clear all accounts with this doc_id, then set the given account's document_id if non-null."""
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.set_document_linked_account(conn, doc_id, account_id)
     conn.execute("UPDATE accounts SET document_id = NULL WHERE document_id = ?", (doc_id,))
     if account_id is not None:
         conn.execute("UPDATE accounts SET document_id = ? WHERE id = ?", (doc_id, account_id))
 
 
+def _parse_facts_learned(raw: str | None) -> list[str] | None:
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, list):
+        return None
+    out: list[str] = []
+    for item in data:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out if out else None
+
+
 def list_documents(conn: sqlite3.Connection, snippet_max_len: int = 250) -> list[tuple]:
     """
-    Returns list of (doc_id, title, source, created_at, num_chunks, snippet, tags, linked_account_ids).
+    Returns list of (doc_id, title, source, created_at, num_chunks, snippet, tags, linked_account_ids, facts_learned, original_vault_path).
     snippet is first chunk content truncated to snippet_max_len; None if no chunks.
     tags is list of tag strings; linked_account_ids is list of account IDs that reference this doc.
+    facts_learned is list of strings or None.
     Ordered by created_at desc.
     """
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_documents(conn, snippet_max_len)
     sql = """
     SELECT
         d.doc_id,
@@ -282,20 +471,36 @@ def list_documents(conn: sqlite3.Connection, snippet_max_len: int = 250) -> list
         d.source,
         d.created_at,
         (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.doc_id) AS num_chunks,
-        (SELECT c.content FROM chunks c WHERE c.doc_id = d.doc_id ORDER BY c.chunk_index LIMIT 1) AS first_content
+        (SELECT c.content FROM chunks c WHERE c.doc_id = d.doc_id ORDER BY c.chunk_index LIMIT 1) AS first_content,
+        d.facts_learned,
+        d.original_vault_path
     FROM documents d
     ORDER BY d.created_at DESC
     """
     cursor = conn.execute(sql)
     rows = cursor.fetchall()
     result = []
-    for doc_id, title, source, created_at, num_chunks, first_content in rows:
+    for doc_id, title, source, created_at, num_chunks, first_content, facts_raw, original_vault_path in rows:
         snippet = None
         if first_content:
             snippet = first_content[:snippet_max_len] + ("..." if len(first_content) > snippet_max_len else "")
         tags = get_document_tags(conn, doc_id)
         linked_account_ids = get_account_ids_by_document_id(conn, doc_id)
-        result.append((doc_id, title, source, created_at, num_chunks, snippet, tags, linked_account_ids))
+        facts_learned = _parse_facts_learned(facts_raw)
+        result.append(
+            (
+                doc_id,
+                title,
+                source,
+                created_at,
+                num_chunks,
+                snippet,
+                tags,
+                linked_account_ids,
+                facts_learned,
+                original_vault_path,
+            )
+        )
     return result
 
 
@@ -310,6 +515,12 @@ def insert_account(
     institution: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_account(
+            conn, id, name, created_at, type, institution, document_id
+        )
     conn.execute(
         "INSERT INTO accounts(id, name, type, institution, document_id, created_at) VALUES (?,?,?,?,?,?)",
         (id, name, type, institution, document_id, created_at),
@@ -317,6 +528,10 @@ def insert_account(
 
 
 def list_accounts(conn: sqlite3.Connection) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_accounts(conn)
     cursor = conn.execute(
         "SELECT id, name, type, institution, document_id, created_at FROM accounts ORDER BY name"
     )
@@ -324,6 +539,10 @@ def list_accounts(conn: sqlite3.Connection) -> list[tuple]:
 
 
 def get_account(conn: sqlite3.Connection, id: str) -> tuple | None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_account(conn, id)
     cursor = conn.execute(
         "SELECT id, name, type, institution, document_id, created_at FROM accounts WHERE id = ?",
         (id,),
@@ -339,6 +558,12 @@ def update_account(
     institution: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.update_account(
+            conn, id, name, type, institution, document_id
+        )
     updates = []
     params = []
     if name is not None:
@@ -360,6 +585,10 @@ def update_account(
 
 
 def delete_account(conn: sqlite3.Connection, id: str) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_account(conn, id)
     conn.execute("DELETE FROM positions WHERE account_id = ?", (id,))
     conn.execute("DELETE FROM accounts WHERE id = ?", (id,))
 
@@ -377,6 +606,22 @@ def insert_position(
     maturity_date: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_position(
+            conn,
+            id,
+            account_id,
+            asset_type,
+            created_at,
+            updated_at,
+            description,
+            principal,
+            rate_apr,
+            maturity_date,
+            document_id,
+        )
     conn.execute(
         """INSERT INTO positions(id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?)""",
@@ -385,19 +630,27 @@ def insert_position(
 
 
 def list_positions(conn: sqlite3.Connection, account_id: str | None = None) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_positions(conn, account_id)
     if account_id:
         cursor = conn.execute(
-            "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at FROM positions WHERE account_id = ? ORDER BY maturity_date",
+            "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at FROM positions WHERE account_id = ? AND resolved_at IS NULL ORDER BY maturity_date",
             (account_id,),
         )
     else:
         cursor = conn.execute(
-            "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at FROM positions ORDER BY maturity_date"
+            "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at FROM positions WHERE resolved_at IS NULL ORDER BY maturity_date"
         )
     return cursor.fetchall()
 
 
 def get_position(conn: sqlite3.Connection, id: str) -> tuple | None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_position(conn, id)
     cursor = conn.execute(
         "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at FROM positions WHERE id = ?",
         (id,),
@@ -415,6 +668,19 @@ def update_position(
     maturity_date: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.update_position(
+            conn,
+            id,
+            updated_at,
+            description,
+            principal,
+            rate_apr,
+            maturity_date,
+            document_id,
+        )
     updates = ["updated_at = ?"]
     params = [updated_at]
     if description is not None:
@@ -437,7 +703,46 @@ def update_position(
 
 
 def delete_position(conn: sqlite3.Connection, id: str) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_position(conn, id)
     conn.execute("DELETE FROM positions WHERE id = ?", (id,))
+
+
+def get_positions_by_document_id(conn: sqlite3.Connection, doc_id: str) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_positions_by_document_id(conn, doc_id)
+    cursor = conn.execute(
+        "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at FROM positions WHERE document_id = ? ORDER BY maturity_date",
+        (doc_id,),
+    )
+    return cursor.fetchall()
+
+
+def set_document_extracted_position(conn: sqlite3.Connection, doc_id: str, extracted_json: str | None) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.set_document_extracted_position(conn, doc_id, extracted_json)
+    conn.execute("UPDATE documents SET extracted_position = ? WHERE doc_id = ?", (extracted_json, doc_id))
+
+
+def clear_document_extracted_position(conn: sqlite3.Connection, doc_id: str) -> None:
+    set_document_extracted_position(conn, doc_id, None)
+
+
+def list_documents_with_extracted_position(conn: sqlite3.Connection) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_documents_with_extracted_position(conn)
+    cursor = conn.execute(
+        "SELECT doc_id, title, extracted_position FROM documents WHERE extracted_position IS NOT NULL AND TRIM(extracted_position) != '' ORDER BY created_at DESC"
+    )
+    return cursor.fetchall()
 
 
 def insert_obligation(
@@ -450,6 +755,19 @@ def insert_obligation(
     priority: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_obligation(
+            conn,
+            id,
+            description,
+            due_date,
+            created_at,
+            amount_estimate,
+            priority,
+            document_id,
+        )
     conn.execute(
         """INSERT INTO obligations(id, description, due_date, amount_estimate, priority, document_id, created_at)
            VALUES (?,?,?,?,?,?,?)""",
@@ -458,13 +776,107 @@ def insert_obligation(
 
 
 def list_obligations(conn: sqlite3.Connection) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_obligations(conn)
     cursor = conn.execute(
-        "SELECT id, description, due_date, amount_estimate, priority, document_id, created_at FROM obligations ORDER BY due_date"
+        "SELECT id, description, due_date, amount_estimate, priority, document_id, created_at FROM obligations WHERE resolved_at IS NULL ORDER BY due_date"
+    )
+    return cursor.fetchall()
+
+
+def list_recent_positions(conn: sqlite3.Connection, since_ts: int, limit: int = 10) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_recent_positions(conn, since_ts, limit)
+    cursor = conn.execute(
+        """SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date, document_id, created_at, updated_at
+           FROM positions WHERE resolved_at IS NULL AND created_at >= ? ORDER BY created_at DESC LIMIT ?""",
+        (since_ts, limit),
+    )
+    return cursor.fetchall()
+
+
+def list_recent_obligations(conn: sqlite3.Connection, since_ts: int, limit: int = 10) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_recent_obligations(conn, since_ts, limit)
+    cursor = conn.execute(
+        """SELECT id, description, due_date, amount_estimate, priority, document_id, created_at
+           FROM obligations WHERE resolved_at IS NULL AND created_at >= ? ORDER BY created_at DESC LIMIT ?""",
+        (since_ts, limit),
+    )
+    return cursor.fetchall()
+
+
+def resolve_position(conn: sqlite3.Connection, id: str, updated_at: int, maturity_date: str | None = None) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.resolve_position(conn, id, updated_at, maturity_date)
+    if maturity_date is not None:
+        conn.execute(
+            "UPDATE positions SET maturity_date = ?, updated_at = ?, resolved_at = NULL WHERE id = ?",
+            (maturity_date, updated_at, id),
+        )
+    else:
+        conn.execute(
+            "UPDATE positions SET resolved_at = ?, updated_at = ? WHERE id = ?",
+            (updated_at, updated_at, id),
+        )
+
+
+def resolve_obligation(conn: sqlite3.Connection, id: str, resolved_at: int) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.resolve_obligation(conn, id, resolved_at)
+    conn.execute("UPDATE obligations SET resolved_at = ? WHERE id = ?", (resolved_at, id))
+
+
+def get_obligations_by_document_id(conn: sqlite3.Connection, doc_id: str) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_obligations_by_document_id(conn, doc_id)
+    cursor = conn.execute(
+        "SELECT id, description, due_date, amount_estimate, priority, document_id, created_at FROM obligations WHERE document_id = ? AND resolved_at IS NULL ORDER BY due_date",
+        (doc_id,),
+    )
+    return cursor.fetchall()
+
+
+def set_document_extracted_obligation(conn: sqlite3.Connection, doc_id: str, extracted_json: str | None) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.set_document_extracted_obligation(conn, doc_id, extracted_json)
+    conn.execute("UPDATE documents SET extracted_obligation = ? WHERE doc_id = ?", (extracted_json, doc_id))
+
+
+def clear_document_extracted_obligation(conn: sqlite3.Connection, doc_id: str) -> None:
+    set_document_extracted_obligation(conn, doc_id, None)
+
+
+def list_documents_with_extracted_obligation(conn: sqlite3.Connection) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_documents_with_extracted_obligation(conn)
+    cursor = conn.execute(
+        "SELECT doc_id, title, extracted_obligation FROM documents WHERE extracted_obligation IS NOT NULL AND TRIM(extracted_obligation) != '' ORDER BY created_at DESC"
     )
     return cursor.fetchall()
 
 
 def get_obligation(conn: sqlite3.Connection, id: str) -> tuple | None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_obligation(conn, id)
     cursor = conn.execute(
         "SELECT id, description, due_date, amount_estimate, priority, document_id, created_at FROM obligations WHERE id = ?",
         (id,),
@@ -481,6 +893,18 @@ def update_obligation(
     priority: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.update_obligation(
+            conn,
+            id,
+            description,
+            due_date,
+            amount_estimate,
+            priority,
+            document_id,
+        )
     updates = []
     params = []
     if description is not None:
@@ -505,6 +929,10 @@ def update_obligation(
 
 
 def delete_obligation(conn: sqlite3.Connection, id: str) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.delete_obligation(conn, id)
     conn.execute("DELETE FROM obligations WHERE id = ?", (id,))
 
 
@@ -518,6 +946,19 @@ def upsert_trigger_event(
     status: str,
     event_date: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.upsert_trigger_event(
+            conn,
+            id,
+            trigger_type,
+            entity_type,
+            entity_id,
+            evaluated_at,
+            status,
+            event_date,
+        )
     conn.execute(
         """INSERT INTO trigger_events(id, trigger_type, entity_type, entity_id, event_date, evaluated_at, status)
            VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET event_date=excluded.event_date, evaluated_at=excluded.evaluated_at, status=excluded.status""",
@@ -531,6 +972,10 @@ def list_trigger_events(
     since: int | None = None,
     limit: int = 100,
 ) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_trigger_events(conn, status, since, limit)
     sql = "SELECT id, trigger_type, entity_type, entity_id, event_date, evaluated_at, status FROM trigger_events WHERE 1=1"
     params = []
     if status:
@@ -553,6 +998,12 @@ def insert_decision_history(
     memo: str | None = None,
     trigger_ids: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_decision_history(
+            conn, id, evaluated_at, status, memo, trigger_ids
+        )
     conn.execute(
         "INSERT INTO decision_history(id, evaluated_at, status, memo, trigger_ids) VALUES (?,?,?,?,?)",
         (id, evaluated_at, status, memo, trigger_ids),
@@ -564,6 +1015,10 @@ def list_decision_history(
     since: int | None = None,
     limit: int = 50,
 ) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_decision_history(conn, since, limit)
     sql = "SELECT id, evaluated_at, status, memo, trigger_ids FROM decision_history WHERE 1=1"
     params = []
     if since is not None:
@@ -586,6 +1041,20 @@ def insert_rate_snapshot(
     source_name: str | None = None,
     quote: str | None = None,
 ) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_rate_snapshot(
+            conn,
+            id,
+            fetched_at,
+            product_type,
+            rate_apr,
+            term_months,
+            source_url,
+            source_name,
+            quote,
+        )
     conn.execute(
         """INSERT INTO rate_snapshots(id, fetched_at, product_type, term_months, rate_apr, source_url, source_name, quote)
            VALUES (?,?,?,?,?,?,?,?)""",
@@ -599,6 +1068,12 @@ def get_latest_rate_snapshots(
     term_months: int | None = None,
     limit: int = 10,
 ) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.get_latest_rate_snapshots(
+            conn, product_type, term_months, limit
+        )
     sql = "SELECT id, fetched_at, product_type, term_months, rate_apr, source_url, source_name, quote FROM rate_snapshots WHERE 1=1"
     params = []
     if product_type:

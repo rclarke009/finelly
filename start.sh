@@ -2,8 +2,9 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "Starting Finelly (Ollama + app)..."
+echo "Starting Ledgerly (Postgres+pgvector internal, Ollama, app, finance MCP)..."
 docker compose up -d
+echo "Finance MCP (optional, e.g. Cursor): http://localhost:8001/mcp — set FINNHUB_API_KEY in .env for live quotes."
 
 echo "Waiting for Ollama to be ready..."
 until docker compose exec -T ollama ollama list >/dev/null 2>&1; do
@@ -11,10 +12,18 @@ until docker compose exec -T ollama ollama list >/dev/null 2>&1; do
 done
 
 echo "Making sure models are available (one-time download if needed)..."
-docker compose exec -T ollama ollama pull qwen3.5:2b
+docker compose exec -T ollama ollama pull qwen3:8b
 docker compose exec -T ollama ollama pull nomic-embed-text
-docker compose exec -T ollama ollama pull qwen2.5vl:7b
+docker compose exec -T ollama ollama pull llava:7b
+
+echo "Waiting for Ledgerly web app..."
+until curl -sf http://localhost:8000/health 2>/dev/null | grep -q '"healthy":true'; do
+  sleep 2
+done
 
 echo ""
 echo "Ready. Open in your browser: http://localhost:8000/"
+if [ "$(uname -s)" = "Darwin" ]; then
+  open "http://localhost:8000/"
+fi
 echo "To stop later: docker compose down"

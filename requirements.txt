@@ -9,4 +9,12 @@ google-auth
 google-auth-oauthlib
 google-api-python-client
 pypdf
+pymupdf
+pytesseract
+Pillow
 sentence-transformers
+langgraph
+psycopg[binary]
+watchdog
+prometheus-client
+prometheus-fastapi-instrumentator>=7.0.0,<8

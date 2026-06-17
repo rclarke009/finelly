@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
-VERBIAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$VERBIAGE_DIR"
+LEDGERLY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$LEDGERLY_DIR"
 
 # Start Ollama in background if not already responding
 if ! curl -s -o /dev/null -w "%{http_code}" http://localhost:11434/api/tags 2>/dev/null | grep -q 200; then
@@ -22,10 +22,10 @@ for i in $(seq 1 30); do
   fi
   sleep 1
 done
-echo "Ensuring text LLM (qwen3.5:2b) is available..."
-ollama pull qwen3.5:2b
-echo "Ensuring vision model (qwen2.5vl:7b) is available for image features..."
-ollama pull qwen2.5vl:7b
+echo "Ensuring text LLM (qwen3:8b) is available..."
+ollama pull qwen3:8b
+echo "Ensuring vision model (llava:7b) is available for image features..."
+ollama pull llava:7b
 
 # Prefer .venv, fallback to .venv-mlx
 if [ -d ".venv" ]; then
@@ -37,5 +37,8 @@ else
   exit 1
 fi
 
-echo "Starting Finelly at http://localhost:8000"
-exec uvicorn app.main:app --reload
+echo "Starting Ledgerly at http://localhost:8000"
+# Exclude venv trees — pip installs there trigger endless reload loops with --reload.
+exec uvicorn app.main:app --reload \
+  --reload-exclude '.venv' \
+  --reload-exclude '.venv-mlx'

@@ -8,7 +8,8 @@ Activate the project venv first so httpx is available, e.g.:
 
 Usage:
   python ingest_file.py payload.json
-  python ingest_file.py doc.txt --doc-id my-doc --title "My Doc" --source file
+  python ingest_file.py doc.txt --doc-id my-doc --title "My Doc"
+  # Source defaults to the file's absolute path; override with --source if needed.
 
 Image ingestion (JPG/PNG, e.g. bank screenshots): use POST /ingest/image with
 multipart form, e.g. curl -X POST http://localhost:8000/ingest/image -F "file=@screenshot.jpg"
@@ -28,7 +29,11 @@ def main() -> None:
     parser.add_argument("file", type=Path, help="Path to plain-text file")
     parser.add_argument("--doc-id", default=None, help="doc_id (default: stem of filename)")
     parser.add_argument("--title", default=None, help="Document title (default: stem of filename)")
-    parser.add_argument("--source", default="ingest_file.py", help="Source label")
+    parser.add_argument(
+        "--source",
+        default=None,
+        help="Source label (default: absolute path of the file)",
+    )
     parser.add_argument("--url", default="http://localhost:8000", help="Base URL of the API")
     args = parser.parse_args()
 
@@ -40,12 +45,13 @@ def main() -> None:
     text = path.read_text(encoding="utf-8")
     doc_id = args.doc_id if args.doc_id is not None else path.stem
     title = args.title if args.title is not None else path.stem
+    source = args.source if args.source is not None else str(path.resolve())
 
     payload = {
         "text": text,
         "doc_id": doc_id,
         "title": title,
-        "source": args.source,
+        "source": source,
     }
     body = json.dumps(payload)
 

@@ -1,29 +1,21 @@
-# llm_client.py
-# has an async answer with context function
-#
-# OpenAI path: answer_openai() is called only with server-built, non-PII prompts
-# (e.g. "what should someone do with $X in a CD?"). Never send user names,
-# institution names, doc/chunk content, or raw user questions to OpenAI.
+"""Ollama and OpenAI LLM clients."""
 
-'''**Hint:** Reuse your ai-document LLM client or a minimal async caller; 
-point it at **Ollama** (e.g. `http://localhost:11434`) and use 
-**Llama 3.1 8B** (`llama3.1:8b`) so all generation stays local for 
-client-name privacy. Keep the prompt template in one place so you can 
-tune it later for “overview and detailed image verbiage.” Next phase: **LLaVA** 
-(Ollama) for “look at this job’s images and write report text.”'''
+from __future__ import annotations
 
-import json
-import random
 import asyncio
+import json
+import logging
+import time
 from typing import AsyncIterator
 
 import httpx
 
 from app.config import (
-    LLM_BASE_URL,
     LLAVA_MODEL,
+    LLM_BASE_URL,
     LLM_MAX_ATTEMPTS,
     LLM_MODEL,
+    LLM_STREAM_TIMEOUT_SECONDS,
     LLM_TIMEOUT_SECONDS,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
@@ -31,248 +23,164 @@ from app.config import (
     OPENAI_MODEL,
     OPENAI_TIMEOUT_SECONDS,
 )
-from app.errors import (
-    LLMRateLimitedError,
-    LLMServiceError,
-    LLMUpstreamTimeoutError,
-)
+from app.ask_trace import log_ask_event
+from app.errors import LLMServiceError, LLMUpstreamTimeoutError
+from app.ollama_guard import ollama_guard
+
+logger = logging.getLogger(__name__)
 
 
-
-async def answer_with_context(prompt: str)->str:
-    """Call OpenAI chat completions with the RAG prompt; return the assistant reply."""
-    
-    last_exc: BaseException | None = None
-    for attempt in range(LLM_MAX_ATTEMPTS):
-    
-        try:
-            async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
-                resp = await client.post(
-                    url = f"{LLM_BASE_URL.rstrip('/')}/api/chat",
-                    json={
-                        "model": LLM_MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False
-                    },
-                )
-            if resp.status_code == 429:
-                raise LLMRateLimitedError("LLM rate limited")
-            if resp.status_code >= 400:
-                raise LLMServiceError(f"LLM API error {resp.status_code}: {resp.text[:200]}")
-            data = resp.json()
-            
-            text = data.get("message", {}).get("content", "").strip()
-
-            return text
-
-        except LLMServiceError:
-            raise
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise LLMServiceError(f"Ollama (LLM) connection failed: {e}") from e
-        except httpx.TimeoutException as e:
-            # last_exc = LLMUpstreamTimeoutError("Embedding request timed out") from e      # this version of python didn't like this exception chaining. We will figure that out later.
-            last_exc = LLMUpstreamTimeoutError("Embedding request timed out")
-            if attempt < LLM_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise last_exc
-            continue
-        except (LLMRateLimitedError, LLMUpstreamTimeoutError) as e:
-            last_exc = e
-            if attempt < LLM_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise
-            continue
-
-
-
-    else:
-        if last_exc:
-            raise last_exc
-        raise RuntimeError("Embedding retries exhausted attempting to reach llm client")
-
-
-# Timeout for streaming (generation can take minutes)
-LLM_STREAM_TIMEOUT_SECONDS = 300
+async def answer_with_context(prompt: str) -> str:
+    t0 = time.perf_counter()
+    text = await _chat_once(prompt, stream=False)
+    log_ask_event(
+        "llm_completion",
+        kind="chat",
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        response_chars=len(text or ""),
+    )
+    return text
 
 
 async def answer_with_context_stream(prompt: str) -> AsyncIterator[str]:
-    """Call Ollama /api/chat with stream=True; yield content deltas as they arrive."""
+    t0 = time.perf_counter()
+    total_chars = 0
+    async for delta in _chat_stream(prompt):
+        total_chars += len(delta)
+        yield delta
+    log_ask_event(
+        "llm_completion",
+        kind="stream",
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        response_chars=total_chars,
+    )
+
+
+async def answer_with_image(image_base64: str, prompt: str) -> str:
+    url = f"{LLM_BASE_URL.rstrip('/')}/api/chat"
+    payload = {
+        "model": LLAVA_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [image_base64],
+            }
+        ],
+        "stream": False,
+    }
+    async with ollama_guard.acquire():
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    return _message_content(data)
+
+
+async def image_to_text_for_ingest(image_base64: str) -> str:
+    prompt = "Extract all readable text from this document image. Return plain text only."
+    return await answer_with_image(image_base64, prompt)
+
+
+async def answer_openai(prompt: str) -> str | None:
+    if not OPENAI_API_KEY:
+        return None
+    url = f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    last_err: Exception | None = None
+    for attempt in range(OPENAI_MAX_ATTEMPTS):
+        try:
+            async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT_SECONDS) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                return (msg.get("content") or "").strip()
+            return ""
+        except Exception as e:
+            last_err = e
+            if attempt + 1 < OPENAI_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * (2**attempt))
+    logger.warning("OpenAI call failed: %s", last_err)
+    return None
+
+
+async def _chat_once(prompt: str, *, stream: bool) -> str:
+    url = f"{LLM_BASE_URL.rstrip('/')}/api/chat"
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": stream,
+    }
+    last_err: Exception | None = None
+    for attempt in range(LLM_MAX_ATTEMPTS):
+        try:
+            async with ollama_guard.acquire():
+                async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+            return _message_content(data)
+        except httpx.TimeoutException as e:
+            last_err = LLMUpstreamTimeoutError(str(e))
+            if attempt + 1 < LLM_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * (2**attempt))
+        except httpx.HTTPStatusError as e:
+            raise LLMServiceError(str(e)) from e
+        except Exception as e:
+            last_err = e
+            if attempt + 1 < LLM_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * (2**attempt))
+    raise last_err or LLMServiceError("LLM chat failed")
+
+
+async def _chat_stream(prompt: str) -> AsyncIterator[str]:
     url = f"{LLM_BASE_URL.rstrip('/')}/api/chat"
     payload = {
         "model": LLM_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": True,
     }
-    last_exc: BaseException | None = None
+    last_err: Exception | None = None
     for attempt in range(LLM_MAX_ATTEMPTS):
         try:
-            async with httpx.AsyncClient(timeout=LLM_STREAM_TIMEOUT_SECONDS) as client:
-                async with client.stream("POST", url, json=payload) as resp:
-                    if resp.status_code == 429:
-                        raise LLMRateLimitedError("LLM rate limited")
-                    if resp.status_code >= 400:
-                        body = await resp.aread()
-                        raise LLMServiceError(
-                            f"LLM API error {resp.status_code}: {body[:200]!r}"
-                        )
-                    async for line in resp.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            data = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        content = data.get("message", {}).get("content") or data.get("response")
-                        if content:
-                            yield content
-                        if data.get("done"):
-                            return
-        except (LLMServiceError, LLMRateLimitedError):
-            raise
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise LLMServiceError(f"Ollama (LLM) connection failed: {e}") from e
-        except httpx.TimeoutException:
-            last_exc = LLMUpstreamTimeoutError("LLM stream timed out")
-            if attempt < LLM_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise last_exc
-            continue
-        except LLMUpstreamTimeoutError as e:
-            last_exc = e
-            if attempt < LLM_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise
-            continue
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("LLM stream retries exhausted")
+            async with ollama_guard.acquire():
+                async with httpx.AsyncClient(timeout=LLM_STREAM_TIMEOUT_SECONDS) as client:
+                    async with client.stream("POST", url, json=payload) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            msg = data.get("message") or {}
+                            delta = msg.get("content") or ""
+                            if delta:
+                                yield delta
+                            if data.get("done"):
+                                return
+            return
+        except httpx.TimeoutException as e:
+            last_err = LLMUpstreamTimeoutError(str(e))
+            if attempt + 1 < LLM_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * (2**attempt))
+        except httpx.HTTPStatusError as e:
+            raise LLMServiceError(str(e)) from e
+        except Exception as e:
+            last_err = e
+            if attempt + 1 < LLM_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * (2**attempt))
+    raise last_err or LLMServiceError("LLM stream failed")
 
 
-async def answer_with_image(image_base64: str, prompt: str) -> str:
-    """
-    Call Ollama vision API (LLaVA) with one image and a text prompt.
-    Uses LLAVA_MODEL and LLM_BASE_URL. No RAG; image-only path.
-    """
-    last_exc: BaseException | None = None
-    for attempt in range(LLM_MAX_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
-                resp = await client.post(
-                    url=f"{LLM_BASE_URL.rstrip('/')}/api/chat",
-                    json={
-                        "model": LLAVA_MODEL,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt or "Describe this image and summarize any financial details or terms.",
-                                "images": [image_base64],
-                            }
-                        ],
-                        "stream": False,
-                    },
-                )
-            if resp.status_code == 429:
-                raise LLMRateLimitedError("LLM rate limited")
-            if resp.status_code >= 400:
-                raise LLMServiceError(
-                    f"LLM API error {resp.status_code}: {resp.text[:200]}"
-                )
-            data = resp.json()
-            text = data.get("message", {}).get("content", "").strip()
-            return text
-        except (LLMServiceError, LLMRateLimitedError):
-            raise
-        except httpx.TimeoutException:
-            last_exc = LLMUpstreamTimeoutError("Vision request timed out")
-            if attempt < LLM_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise last_exc
-            continue
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Vision retries exhausted")
-
-
-# Prompt for extracting text from bank/financial screenshots for RAG ingestion.
-INGEST_IMAGE_EXTRACTION_PROMPT = (
-    "This image is a financial or bank website screenshot. "
-    "Extract and transcribe ALL visible text exactly as shown: numbers, labels, headings, "
-    "table cells, account names, balances, dates, and any UI text. "
-    "Preserve structure where possible (e.g. line breaks for separate lines). "
-    "Output only the extracted text, with no extra commentary."
-)
-
-
-async def image_to_text_for_ingest(image_base64: str) -> str:
-    """
-    Call Ollama vision API (LLaVA) to extract all visible text from an image
-    for RAG ingestion. Uses a fixed extraction prompt tuned for financial/bank
-    screenshots. Same retry/timeout as answer_with_image.
-    """
-    return await answer_with_image(
-        image_base64,
-        INGEST_IMAGE_EXTRACTION_PROMPT,
-    )
-
-
-async def answer_openai(prompt: str) -> str | None:
-    """
-    Call OpenAI Chat Completions with a server-built prompt. Returns None if
-    OPENAI_API_KEY is not set. Used only for non-PII prompts (e.g. CD advice
-    with amount/term/rate only). Never send user names, doc content, or raw
-    user questions here.
-    """
-    if not OPENAI_API_KEY:
-        return None
-    last_exc: BaseException | None = None
-    for attempt in range(OPENAI_MAX_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT_SECONDS) as client:
-                resp = await client.post(
-                    url=f"{OPENAI_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json={
-                        "model": OPENAI_MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                    },
-                )
-            if resp.status_code == 429:
-                raise LLMRateLimitedError("OpenAI rate limited")
-            if resp.status_code >= 400:
-                raise LLMServiceError(
-                    f"OpenAI API error {resp.status_code}: {resp.text[:200]}"
-                )
-            data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            return (content or "").strip()
-        except (LLMServiceError, LLMRateLimitedError):
-            raise
-        except httpx.TimeoutException:
-            last_exc = LLMUpstreamTimeoutError("OpenAI request timed out")
-            if attempt < OPENAI_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise last_exc
-            continue
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("OpenAI retries exhausted")
-
+def _message_content(data: dict) -> str:
+    msg = data.get("message") or {}
+    return (msg.get("content") or "").strip()

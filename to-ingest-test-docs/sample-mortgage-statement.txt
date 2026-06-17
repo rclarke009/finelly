@@ -1,0 +1,28 @@
+First Horizon Home Lending
+Monthly Mortgage Statement
+
+Statement date: June 1, 2026
+Loan number: ****8821
+
+Borrower: Alex Sample
+Property: 123 Maple Street, Anytown, ST 12345
+
+Payment summary
+────────────────────────────────────
+Amount due: $2,247.00
+Payment due date: July 1, 2026
+
+Principal and interest    $1,842.00
+Escrow (taxes/insurance)  $   405.00
+Fees                      $     0.00
+────────────────────────────────────
+Total amount due          $2,247.00
+
+Please pay by the due date to avoid late fees.
+
+Loan details (for reference)
+Outstanding principal balance: $312,450.00
+Interest rate: 6.125%
+Next statement: August 2026
+
+Questions? Call (800) 555-0199.

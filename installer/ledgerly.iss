@@ -1,9 +1,9 @@
-; Finelly Windows installer (requires Docker Desktop already installed)
-; Build from installer with: iscc verbiage.iss
+; Ledgerly Windows installer (requires Docker Desktop on the target PC)
+; Build from installer with: iscc ledgerly.iss
 
-#define MyAppName "Finelly"
+#define MyAppName "Ledgerly"
 #define MyAppVersion "1.0"
-#define MyAppPublisher "Finelly"
+#define MyAppPublisher "Ledgerly"
 #define MyAppURL "https://github.com/"
 
 [Setup]
@@ -16,7 +16,7 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=FinellySetup
+OutputBaseFilename=LedgerlySetup
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=lowest
@@ -39,14 +39,14 @@ Source: "..\*"; DestDir: "{app}"; Flags: recursesubdirs skipifsourcedoesntexist 
 Permissions: users-full
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\Start.bat"; WorkingDir: "{app}"; Comment: "Start Finelly (Docker)"
-Name: "{group}\Stop Finelly"; Filename: "cmd.exe"; Parameters: "/c docker compose down"; WorkingDir: "{app}"; Comment: "Stop Finelly containers"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\Start.bat"; WorkingDir: "{app}"; Comment: "Start Ledgerly (Docker)"
+Name: "{group}\Stop Ledgerly"; Filename: "cmd.exe"; Parameters: "/c docker compose down"; WorkingDir: "{app}"; Comment: "Stop Ledgerly containers"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Start.bat"; WorkingDir: "{app}"; Tasks: desktopicon; Comment: "Start Finelly (Docker)"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Start.bat"; WorkingDir: "{app}"; Tasks: desktopicon; Comment: "Start Ledgerly (Docker)"
 Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\Start.bat"; WorkingDir: "{app}"; Tasks: quicklaunchicon
 
 [Run]
-; Optional: run Finelly after install
+; Optional: run Ledgerly after install
 Filename: "{app}\Start.bat"; Description: "Start {#MyAppName} now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]

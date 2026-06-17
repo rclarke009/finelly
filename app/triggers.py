@@ -1,24 +1,19 @@
-"""
-Trigger engine (Layer 3): evaluate maturity and obligation due dates.
-Deterministic from Layer 2 tables only; no LLM.
-Output: list of active triggers (or none). Optionally persist to trigger_events.
-"""
+"""Decision trigger evaluation."""
 
-import sqlite3
-import time
+from __future__ import annotations
+
+import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-from app.db import upsert_trigger_event
-
-# Default: trigger when maturity or obligation is within this many days
-MATURITY_DAYS_AHEAD = 30
-OBLIGATION_DAYS_AHEAD = 30
+from app.config import MATURITY_DAYS_AHEAD, OBLIGATION_DAYS_AHEAD
+from app.db import list_obligations, list_positions, upsert_trigger_event
 
 
-def _parse_date(s: str | None) -> datetime | None:
-    if not s or not s.strip():
+def _parse_date(value: str | None) -> datetime | None:
+    if not value or not str(value).strip():
         return None
-    s = s.strip()[:10]
+    s = str(value).strip()[:10]
     try:
         return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
@@ -26,69 +21,62 @@ def _parse_date(s: str | None) -> datetime | None:
 
 
 def evaluate_triggers(
-    conn: sqlite3.Connection,
-    maturity_days_ahead: int = MATURITY_DAYS_AHEAD,
-    obligation_days_ahead: int = OBLIGATION_DAYS_AHEAD,
-    persist: bool = True,
-    now_ts: int | None = None,
+    conn: Any,
+    *,
+    maturity_days_ahead: int | None = None,
+    obligation_days_ahead: int | None = None,
+    persist: bool = False,
 ) -> list[tuple]:
-    """
-    Evaluate triggers from positions (maturity) and obligations (due date).
-    Returns list of (id, trigger_type, entity_type, entity_id, event_date, evaluated_at, status).
-    If persist=True, writes to trigger_events and returns the same shape from DB.
-    """
-    now_ts = now_ts or int(time.time())
+    mat_days = maturity_days_ahead if maturity_days_ahead is not None else MATURITY_DAYS_AHEAD
+    obl_days = obligation_days_ahead if obligation_days_ahead is not None else OBLIGATION_DAYS_AHEAD
     now = datetime.now(timezone.utc)
-    maturity_cutoff = now + timedelta(days=maturity_days_ahead)
-    obligation_cutoff = now + timedelta(days=obligation_days_ahead)
-    triggers = []
+    mat_cutoff = now + timedelta(days=mat_days)
+    obl_cutoff = now + timedelta(days=obl_days)
+    evaluated_at = int(now.timestamp())
+    triggers: list[tuple] = []
 
-    # Positions: CD (or any) maturity within N days
-    positions = conn.execute(
-        "SELECT id, account_id, asset_type, description, principal, rate_apr, maturity_date FROM positions WHERE maturity_date IS NOT NULL AND maturity_date != ''"
-    ).fetchall()
-    for row in positions:
-        pos_id, account_id, asset_type, desc, principal, rate_apr, maturity_date = row
+    for row in list_positions(conn):
+        pos_id, _acc, _atype, _desc, _principal, _rate, maturity_date, *_rest = row
         d = _parse_date(maturity_date)
-        if d and now <= d <= maturity_cutoff:
-            trigger_id = f"maturity:{pos_id}"
-            event_date = maturity_date
+        if d is None:
+            continue
+        if now.date() <= d.date() <= mat_cutoff.date():
+            tid = f"maturity:{pos_id}"
             triggers.append(
-                (trigger_id, "maturity", "position", pos_id, event_date, now_ts, "pending")
+                (tid, "maturity", "position", pos_id, maturity_date, evaluated_at, "open")
             )
+            if persist:
+                upsert_trigger_event(
+                    conn,
+                    tid,
+                    "maturity",
+                    "position",
+                    pos_id,
+                    evaluated_at,
+                    "open",
+                    maturity_date,
+                )
 
-    # Obligations: due within N days
-    obligations = conn.execute(
-        "SELECT id, description, due_date, amount_estimate, priority FROM obligations"
-    ).fetchall()
-    for row in obligations:
-        obl_id, desc, due_date, amount_estimate, priority = row
+    for row in list_obligations(conn):
+        obl_id, _desc, due_date, *_rest = row
         d = _parse_date(due_date)
-        if d and now <= d <= obligation_cutoff:
-            trigger_id = f"obligation_due:{obl_id}"
+        if d is None:
+            continue
+        if now.date() <= d.date() <= obl_cutoff.date():
+            tid = f"obligation:{obl_id}"
             triggers.append(
-                (trigger_id, "obligation_due", "obligation", obl_id, due_date, now_ts, "pending")
+                (tid, "obligation_due", "obligation", obl_id, due_date, evaluated_at, "open")
             )
-
-    if persist:
-        for t in triggers:
-            trigger_id, trigger_type, entity_type, entity_id, event_date, evaluated_at, status = t
-            upsert_trigger_event(
-                conn, trigger_id, trigger_type, entity_type, entity_id, evaluated_at, status, event_date
-            )
-        conn.commit()
+            if persist:
+                upsert_trigger_event(
+                    conn,
+                    tid,
+                    "obligation_due",
+                    "obligation",
+                    obl_id,
+                    evaluated_at,
+                    "open",
+                    due_date,
+                )
 
     return triggers
-
-
-def get_active_triggers(
-    conn: sqlite3.Connection,
-    status: str = "pending",
-    limit: int = 50,
-) -> list[tuple]:
-    """Return trigger_events rows (id, trigger_type, entity_type, entity_id, event_date, evaluated_at, status) with status=pending by default."""
-    cursor = conn.execute(
-        "SELECT id, trigger_type, entity_type, entity_id, event_date, evaluated_at, status FROM trigger_events WHERE status = ? ORDER BY evaluated_at DESC LIMIT ?",
-        (status, limit),
-    )
-    return cursor.fetchall()

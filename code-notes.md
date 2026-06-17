@@ -1,4 +1,4 @@
-# Verbiage — Code Notes & Prompts
+# Ledgerly — Code Notes & Prompts
 
 Implementation decisions and prompts for building the app. Use this when implementing ingest, extraction, or RAG.
 
@@ -29,13 +29,13 @@ Implementation decisions and prompts for building the app. Use this when impleme
 
 ## Models (local, for client-name privacy)
 
-- **Text RAG:** **Llama 3.1 8B** (or `LLM_MODEL`) via Ollama for POST /ask. Run with `ollama run llama3.1:8b`; point LLM client at `LLM_BASE_URL` (e.g. `http://localhost:11434`).
-- **Image → report text:** Vision model via Ollama for POST /ask/image and POST /ingest/image. Same base URL (`LLM_BASE_URL`); model name from `LLAVA_MODEL` (default `qwen2.5vl:7b`). Vision API: one image (file upload or URL) + optional prompt → model returns report-style or extracted text. No RAG for /ask/image. Pull with `ollama pull qwen2.5vl:7b`.
+- **Text RAG:** **Qwen3 8B** (or `LLM_MODEL`, default `qwen3:8b`) via Ollama for POST /ask. Run with `ollama run qwen3:8b`; point LLM client at `LLM_BASE_URL` (e.g. `http://localhost:11434`).
+- **Image → report text:** Vision model via Ollama for POST /ask/image and POST /ingest/image. Same base URL (`LLM_BASE_URL`); model name from `LLAVA_MODEL` (default `llava:7b`). Vision API: one image (file upload or URL) + optional prompt → model returns report-style or extracted text. No RAG for /ask/image. Pull with `ollama pull llava:7b`.
 
 ---
 
 ## Placeholder for future notes
 
 - Chunking strategy for reports (by section? by chars?)
-- Verbiage-specific system prompt for POST /ask
+- Ledgerly-specific system prompt for POST /ask
 - Any env vars or config for embed/LLM (see Models above)

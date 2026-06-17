@@ -21,7 +21,7 @@
 
 # Wire the ask endpoint: validate the request; embed the question with the same embedder 
 # you use for chunks; call your retrieval function to get top-k chunks; build a prompt 
-# that includes a short system instruction (e.g. “You suggest report verbiage based on 
+# that includes a short system instruction (e.g. “You suggest report wording based on 
 # the following context”), the user’s question, and a “Context:” section with the 
 # retrieved chunks (include doc_id and maybe chunk_id so the model can refer to sources). 
 # Call your LLM with that prompt and return the model’s answer plus the list of top chunks 
@@ -31,14 +31,14 @@
 # so in the prompt.
 
 # **Why now:** This completes the RAG loop: question → embed → retrieve → prompt 
-# with context → LLM → answer. Verbiage’s value is “ask for overview/detail wording 
+# with context → LLM → answer. Ledgerly’s value is “ask for overview/detail wording 
 # and get it from similar reports.”
 
 # **Hint:** Reuse your ai-document LLM client or a minimal async caller; point it at 
-# **Ollama** (e.g. `http://localhost:11434`) and use **Llama 3.1 8B** (`llama3.1:8b`) 
+# **Ollama** (e.g. `http://localhost:11434`) and use **Qwen3 8B** (`qwen3:8b`, `LLM_MODEL`) 
 # so all generation stays local for client-name privacy. Keep the prompt template in 
-# one place so you can tune it later for “overview and detailed image verbiage.” 
-# Next phase: **LLaVA** (Ollama) for “look at this job’s images and write report text.”
+# one place so you can tune it later for “overview and detailed image wording.” 
+# Vision: **LLAVA_MODEL** on Ollama for “look at this job’s images and write report text.”
 
 ## 10. GET /documents (list ingested)
 
@@ -57,27 +57,32 @@
 
 import base64
 import hashlib
+import os
+import platform
+import subprocess
+import sys
+import tempfile
 from contextlib import asynccontextmanager
-from io import BytesIO
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+from typing import Any, Awaitable, Callable
 import uuid
-
-from pypdf import PdfReader
 
 import httpx
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse, StreamingResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 import sqlite3
 import asyncio
 import time
 import logging
 import json
-
+import mimetypes
 
 from app.db import (
     create_db,
     delete_by_doc_id,
+    delete_document_cascade,
     get_doc_ids_by_tag,
     insert_chunk,
     insert_document,
@@ -105,6 +110,18 @@ from app.db import (
     insert_decision_history,
     list_decision_history,
     list_trigger_events,
+    get_document_source,
+    get_document_original_vault_path,
+    update_document_source,
+    get_positions_by_document_id,
+    get_obligations_by_document_id,
+    set_document_extracted_position,
+    clear_document_extracted_position,
+    set_document_extracted_obligation,
+    clear_document_extracted_obligation,
+    list_documents_with_extracted_obligation,
+    resolve_position,
+    resolve_obligation,
 )
 from app.models import (
     AskGeneralRequest,
@@ -118,6 +135,11 @@ from app.models import (
     DocumentsListResponse,
     IngestRequest,
     IngestResponse,
+    IngestEnqueueResponse,
+    IngestJobEnqueueItem,
+    IngestJobStatusResponse,
+    AskJobEnqueueResponse,
+    AskJobStatusResponse,
     IngestGoogleDriveRequest,
     IngestGoogleDriveResponse,
     DecisionResponse,
@@ -125,6 +147,15 @@ from app.models import (
     UserDataSource,
     WebSource,
     DecisionHistoryItem,
+    DashboardResponse,
+    ConfirmExtractionRequest,
+    ConfirmExtractionResponse,
+    ConfirmObligationExtractionRequest,
+    ConfirmObligationExtractionResponse,
+    ExtractedPosition,
+    ExtractedObligation,
+    ResolvePositionRequest,
+    ResolveObligationRequest,
     AccountCreate,
     AccountUpdate,
     AccountResponse,
@@ -134,28 +165,88 @@ from app.models import (
     ObligationCreate,
     ObligationUpdate,
     ObligationResponse,
+    VaultStatusResponse,
+    VaultPendingIngestRequest,
+    VaultSettingsGetResponse,
+    VaultSettingsConfigAllowedResponse,
+    VaultSettingsPutRequest,
+    VaultRootVerifyRequest,
+    VaultRootVerifyResponse,
+    VaultNativePickFolderResponse,
+    VaultIncomingScanResponse,
+    WarmupResponse,
+    WarmupStatusResponse,
 )
 from app.triggers import evaluate_triggers
+from app.dashboard import build_dashboard
+from app.extraction_apply import apply_obligation_extraction, apply_position_extraction
+from app.ingest_structured import (
+    detect_tax_document_tags,
+    extract_structured_obligation,
+    extract_structured_position,
+)
 from app.reference_data import fetch_cd_rates, RateInfo
 from app.rate_limit import TokenBucket
 from app.chunking import chunk_text_chars
 from app.embeddings import HttpEmbedder
 from app.job_store import JobStore
 from app.worker import worker_loop
+from app.ingest_queue import IngestJobStore
+from app.ingest_worker import ingest_worker_loop
+from app.ingest_jobs import IngestJob, IngestJobKind
+from app.pdf_ingest import parse_pdf_text_mode, resolve_pdf_for_ingest
+from app.ask_graph import build_prompt_and_chunks
+from app.ask_queue import AskJobStore
+from app.ask_worker import ask_worker_loop
+from app.ask_jobs import AskJob
+from app.answer_format import (
+    ANSWER_FORMAT_PROMPT_SUFFIX,
+    merge_structured_to_response,
+    normalize_markdown_layout,
+    split_structured,
+)
+from app.advice_format import split_advice_bullets
 from app.retrieval import retrieve_top_k
 from app.reranker import rerank
 from app.errors import LLMRateLimitedError, LLMServiceError, LLMTimeoutError, LLMUpstreamTimeoutError
 from app.drive_client import list_and_export_docs, DriveClientError
 from app.config import (
+    DATABASE_URL,
+    DB_PATH,
     GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI,
+    INGEST_FACTS_ENABLED,
+    INGEST_STRUCTURED_ENABLED,
+    INGEST_AUTO_TRACK_ENABLED,
+    METRICS_ENABLED,
     RERANK_ENABLED,
     RERANK_INITIAL_K_MAX,
     RERANK_INITIAL_K_MULTIPLIER,
+    ALLOW_REMOTE_VAULT_SETTINGS,
+    VAULT_SAVE_TEXT_INGEST,
+    ASK_COOLDOWN_AFTER_PREP_SEC,
+    ASK_QUEUE_ESTIMATED_WAIT_SEC,
+    _portable_profile,
 )
+from app import originals_vault as originals_vault_mod
+from app.vault_settings_store import (
+    effective_vault_root_source,
+    file_settings_snapshot,
+    resolve_vault_incoming_mode,
+    resolve_vault_root,
+    vault_root_is_from_env,
+    write_vault_settings_file,
+)
+from app.vault_path_validation import validate_vault_root_path
+from app.native_folder_dialog import NativeFolderDialogUnavailable, pick_native_folder
+from app.db_connection import app_db_connection
 from app import llm_client
+from app.ingest_facts import extract_document_facts
 from app.remote_log import send_remote_log
+from app.ask_trace import AskTraceContext, ask_trace_scope, log_ask_event
+from app.api_errors import error_envelope, http_error_code
+from app.ollama_warmup import get_warmup_status, request_warmup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -173,18 +264,30 @@ class DuplicateContentError(Exception):
 
 @asynccontextmanager
 async def lifespan(app):
+    if DATABASE_URL:
+        import psycopg
 
-    # create db
-    app.state.db_path = "documentsdb.sqlite"
+        app.state.use_postgres = True
+        app.state.pg_dsn = DATABASE_URL
+        app.state.db_path = ""
+        with psycopg.connect(DATABASE_URL) as init_conn:
+            create_db(init_conn)
+            init_conn.commit()
+        logger.info("Database: Postgres (DATABASE_URL)")
+    else:
+        app.state.use_postgres = False
+        app.state.pg_dsn = None
+        app.state.db_path = DB_PATH
+        newdb = sqlite3.connect(app.state.db_path)
+        create_db(newdb)
+        newdb.close()
+        logger.info("Database: SQLite at %s", app.state.db_path)
 
-    newdb = sqlite3.connect(app.state.db_path)
-    # app.state.db_conn = create_db(newdb)      concurrency issues since the documents fetch is on a separate thread
-    conn = create_db(newdb)
-    conn.close()            # we don't need the connection right now, other areas will grab their conn based on the path 
-
-    ### to do - create job store
     app.state.job_store = JobStore()
     job_store = app.state.job_store
+
+    app.state.ingest_job_store = IngestJobStore()
+    app.state.ask_job_store = AskJobStore()
 
     #create token bucket
     app.state.rate_limiter = TokenBucket()
@@ -192,22 +295,85 @@ async def lifespan(app):
 
     #create task loop - worker will poll for pending jobs and process them.
     task = asyncio.create_task(worker_loop(job_store, rate_limiter))
+    ingest_worker_task = asyncio.create_task(ingest_worker_loop(app))
+    ask_worker_task = asyncio.create_task(ask_worker_loop(app))
+    vault_watch_task: asyncio.Task | None = None
+    try:
+        if originals_vault_mod.vault_enabled() and originals_vault_mod.vault_watcher_requested():
+            from app.vault_watcher import vault_watcher_loop
+
+            vault_watch_task = asyncio.create_task(vault_watcher_loop(app))
+    except Exception as e:
+        logger.warning("Vault watcher not started: %s", e)
+    app.state.vault_watch_task = vault_watch_task
     logger.info("Work Started")
 
     yield
     task.cancel()
-    
+    ingest_worker_task.cancel()
+    ask_worker_task.cancel()
+    vwt_shutdown = getattr(app.state, "vault_watch_task", None)
+    if vwt_shutdown is not None:
+        vwt_shutdown.cancel()
+
     try:
         await task
     except asyncio.CancelledError as e:
         pass
+    try:
+        await ingest_worker_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await ask_worker_task
+    except asyncio.CancelledError:
+        pass
+    if vwt_shutdown is not None:
+        try:
+            await vwt_shutdown
+        except asyncio.CancelledError:
+            pass
 
-    conn.close()
     logger.info("Work has stopped")
 
 
+def _request_may_configure_vault(request: Request) -> bool:
+    if ALLOW_REMOTE_VAULT_SETTINGS:
+        return True
+    client = request.client
+    return _client_host_is_loopback(client.host if client else None)
+
+
+async def restart_vault_watcher_app(app: Any) -> None:
+    from app.vault_watcher import vault_watcher_loop
+
+    old = getattr(app.state, "vault_watch_task", None)
+    if old is not None and not old.done():
+        old.cancel()
+        try:
+            await old
+        except asyncio.CancelledError:
+            pass
+    app.state.vault_watch_task = None
+    if originals_vault_mod.vault_enabled() and originals_vault_mod.vault_watcher_requested():
+        app.state.vault_watch_task = asyncio.create_task(vault_watcher_loop(app))
+
+
 # create the web service and async life cycle thingy
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Ledgerly",
+    description="Private cash and document assistant API",
+    lifespan=lifespan,
+)
+
+if METRICS_ENABLED:
+    from prometheus_fastapi_instrumentator import Instrumentator
+
+    Instrumentator(
+        should_ignore_untemplated=True,
+        should_instrument_requests_inprogress=True,
+        excluded_handlers=["/metrics"],
+    ).instrument(app).expose(app, include_in_schema=False)
 
 
 @app.middleware("http")
@@ -228,6 +394,47 @@ def _duration_ms(request: Request) -> int | None:
     return int((time.perf_counter() - request.state.start_time) * 1000)
 
 
+def _ask_trace_from_request(request: Request, question: str) -> AskTraceContext:
+    q = (question or "").strip()
+    preview = q[:80] + ("…" if len(q) > 80 else "")
+    rid = getattr(request.state, "request_id", None) or "unknown"
+    http_route = getattr(request.state, "route", None) or f"{request.method} {request.url.path}"
+    return AskTraceContext(request_id=str(rid), http_route=http_route, question_preview=preview)
+
+
+def _log_ask_begin(body: AskRequest) -> None:
+    log_ask_event(
+        "ask_begin",
+        top_k=body.top_k,
+        use_rag=body.use_rag,
+        doc_id_set=bool(body.doc_id and str(body.doc_id).strip()),
+        doc_ids_count=len(body.doc_ids or []),
+        tag_set=bool(body.tag and str(body.tag).strip()),
+        question_len=len(body.question or ""),
+    )
+
+
+def _strip_nul_bytes(s: str) -> str:
+    """PostgreSQL text columns reject NUL (0x00); PDF extractors sometimes emit them."""
+    return s.replace("\x00", "")
+
+
+def _document_summary_from_row(r: tuple[Any, ...]) -> DocumentSummary:
+    """Map list_documents row tuple to DocumentSummary (10 fields when original_vault_path present)."""
+    vault_rel = r[9] if len(r) > 9 else None
+    return DocumentSummary(
+        doc_id=r[0],
+        title=r[1],
+        source=r[2],
+        created_at=r[3],
+        num_chunks=r[4],
+        snippet=r[5],
+        tags=r[6] if len(r) > 6 else [],
+        linked_account_ids=r[7] if len(r) > 7 else [],
+        facts_learned=r[8] if len(r) > 8 else None,
+        original_vault_path=vault_rel,
+        has_openable_original=_stored_original_file_exists(r[2], vault_rel),
+    )
 def _remote_log_error(request: Request, message: str, error_type: str) -> None:
     send_remote_log(
         level="ERROR",
@@ -241,7 +448,7 @@ def _remote_log_error(request: Request, message: str, error_type: str) -> None:
 
 
 async def ingest_text(
-    conn: sqlite3.Connection,
+    conn: Any,
     doc_id: str,
     title: str | None,
     source: str | None,
@@ -250,16 +457,31 @@ async def ingest_text(
     confirm_duplicate_content: bool = False,
     tags: list[str] | None = None,
     account_id: str | None = None,
+    progress: Callable[..., Awaitable[None]] | None = None,
+    *,
+    vault_original: tuple[str, bytes] | None = None,
+    vault_text_utf8_snapshot: bytes | None = None,
+    persist_normalized_text_snapshot: bool = True,
+    canonical_original_vault_rel: str | None = None,
 ) -> IngestResponse:
     """
     Shared ingest: chunk text, insert document + chunks, embed, insert embeddings, commit.
     Raises ValueError('doc_id already exists') if doc_id is duplicate.
     Raises DuplicateContentError(existing_doc_id) if same content already ingested and not confirmed.
     Rollback (delete_by_doc_id) on embedding failure.
+    Optional progress(stage, progress_pct) for queued ingests (0–100).
     """
+    async def _maybe_progress(stage: str, pct: float, **kwargs: Any) -> None:
+        if progress is not None:
+            await progress(stage, pct, **kwargs)
+
     if doc_exist(conn, doc_id):
         raise ValueError("doc_id already exists")
-    normalized = text.strip()
+    if title is not None:
+        title = _strip_nul_bytes(title)
+    if source is not None:
+        source = _strip_nul_bytes(source)
+    normalized = _strip_nul_bytes(text.strip())
     content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     if not confirm_duplicate_content:
         existing_doc_id = find_doc_id_by_content_hash(conn, content_hash)
@@ -267,39 +489,158 @@ async def ingest_text(
             raise DuplicateContentError(existing_doc_id)
     opts = chunking_options
     chunks = chunk_text_chars(normalized, opts.chunk_size, opts.chunk_overlap)
-    insert_document(conn, doc_id, int(time.time()), title, source, content_hash=content_hash)
+    await _maybe_progress("chunking", 15.0)
+    facts_learned_json: str | None = None
+    facts_for_response: list[str] | None = None
+    if INGEST_FACTS_ENABLED:
+        await _maybe_progress("facts", 16.0)
+        try:
+            facts_list = await extract_document_facts(normalized, title)
+            if facts_list:
+                facts_learned_json = json.dumps(facts_list)
+                facts_for_response = facts_list
+        except Exception as e:
+            logger.warning("ingest facts: skipped due to error: %s", e)
+    effective_source = source
+    stored_vault_rel: str | None = None
+    text_snapshot = vault_text_utf8_snapshot
+    if (
+        vault_original is None
+        and text_snapshot is None
+        and canonical_original_vault_rel is None
+        and originals_vault_mod.vault_enabled()
+        and VAULT_SAVE_TEXT_INGEST
+        and persist_normalized_text_snapshot
+    ):
+        text_snapshot = normalized.encode("utf-8")
+    if canonical_original_vault_rel:
+        stored_vault_rel = canonical_original_vault_rel
+        p_canon = originals_vault_mod.absolute_from_vault_relative(canonical_original_vault_rel)
+        if p_canon is not None:
+            effective_source = str(p_canon)
+    elif originals_vault_mod.vault_enabled() and vault_original is not None:
+        rel, abs_saved = originals_vault_mod.save_original(
+            doc_id, vault_original[0], vault_original[1]
+        )
+        if rel is not None:
+            stored_vault_rel = rel
+        if abs_saved is not None:
+            effective_source = str(abs_saved)
+    elif originals_vault_mod.vault_enabled() and text_snapshot is not None:
+        rel, abs_saved = originals_vault_mod.save_text_snapshot(doc_id, text_snapshot)
+        if rel is not None:
+            stored_vault_rel = rel
+        if abs_saved is not None:
+            effective_source = str(abs_saved)
+
+    insert_document(
+        conn,
+        doc_id,
+        int(time.time()),
+        title,
+        effective_source,
+        content_hash=content_hash,
+        facts_learned=facts_learned_json,
+        original_vault_path=stored_vault_rel,
+    )
     for chunk in chunks:
         chunk_id = f"{doc_id}:{chunk.chunk_index}"
         insert_chunk(
             conn, chunk_id, doc_id, chunk.chunk_index, chunk.content,
             chunk.start_offset, chunk.end_offset,
         )
+    await _maybe_progress("embedding", 20.0)
     embedder = HttpEmbedder()
+
+    async def _on_embed_batch(batch_idx: int, total_batches: int) -> None:
+        if progress is None:
+            return
+        pct = 20.0 + (batch_idx / max(total_batches, 1)) * 70.0
+        await progress(
+            "embedding",
+            min(pct, 89.9),
+            batches_done=batch_idx,
+            total_embed_batches=total_batches,
+        )
+
     try:
-        vectors = await embedder.embed_many([c.content for c in chunks])
+        vectors = await embedder.embed_many(
+            [c.content for c in chunks],
+            on_embed_batch_complete=_on_embed_batch if progress else None,
+        )
     except Exception as e:
         delete_by_doc_id(conn, doc_id)
+        conn.commit()
         logger.exception("embedding failed", exc_info=e)
         raise
+    await _maybe_progress("saving", 92.0)
     for chunk, vector in zip(chunks, vectors):
         chunk_id = f"{doc_id}:{chunk.chunk_index}"
         insert_embedding(conn, chunk_id, embedder.model, json.dumps(vector), embedder.dim)
     if tags:
         set_document_tags(conn, doc_id, tags)
+    tax_tags = detect_tax_document_tags(title, normalized)
+    if tax_tags:
+        merged_tags = list(dict.fromkeys((tags or []) + tax_tags))
+        set_document_tags(conn, doc_id, merged_tags)
     if account_id:
         set_document_linked_account(conn, doc_id, account_id)
+    extracted_for_response: ExtractedPosition | None = None
+    extracted_obligation_for_response: ExtractedObligation | None = None
+    if INGEST_STRUCTURED_ENABLED:
+        await _maybe_progress("structured", 90.0)
+        try:
+            extracted_dict = await extract_structured_position(normalized, title)
+            if extracted_dict and extracted_dict.get("maturity_date"):
+                set_document_extracted_position(conn, doc_id, json.dumps(extracted_dict))
+                extracted_for_response = ExtractedPosition(**extracted_dict)
+        except Exception as e:
+            logger.warning("ingest structured: skipped due to error: %s", e)
+        if extracted_for_response is None:
+            try:
+                obl_dict = await extract_structured_obligation(normalized, title)
+                if obl_dict and obl_dict.get("due_date"):
+                    set_document_extracted_obligation(conn, doc_id, json.dumps(obl_dict))
+                    extracted_obligation_for_response = ExtractedObligation(**obl_dict)
+            except Exception as e:
+                logger.warning("ingest obligation structured: skipped due to error: %s", e)
+
+    auto_tracked_position = None
+    auto_tracked_obligation = None
+    if INGEST_AUTO_TRACK_ENABLED:
+        try:
+            if extracted_for_response is not None:
+                auto_tracked_position = apply_position_extraction(
+                    conn, doc_id, extracted=extracted_for_response
+                )
+            elif extracted_obligation_for_response is not None:
+                auto_tracked_obligation = apply_obligation_extraction(
+                    conn, doc_id, extracted=extracted_obligation_for_response
+                )
+        except Exception as e:
+            logger.warning("auto-track on ingest failed for %s: %s", doc_id, e)
+
     conn.commit()
+    has_openable_original = _stored_original_file_exists(effective_source, stored_vault_rel)
     return IngestResponse(
         doc_id=doc_id,
         num_chunks=len(chunks),
         embedding_model=embedder.model,
         dim=embedder.dim,
+        facts_learned=facts_for_response,
+        extracted_position=extracted_for_response,
+        extracted_obligation=extracted_obligation_for_response,
+        auto_tracked_position=auto_tracked_position,
+        auto_tracked_obligation=auto_tracked_obligation,
+        source=effective_source,
+        original_vault_path=stored_vault_rel,
+        has_openable_original=has_openable_original,
     )
 
 
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(request: Request, ingest_request: IngestRequest):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         try:
             return await ingest_text(
                 conn,
@@ -321,22 +662,12 @@ async def ingest(request: Request, ingest_request: IngestRequest):
             if "already exists" in str(e):
                 raise HTTPException(
                     status_code=409,
-                    detail="doc_id (document title) already exists. Use a different doc_id or delete the existing document first.",
+                    detail="A document with this ID already exists. Use a different document ID or delete the existing document first.",
                 ) from e
             raise
         except Exception as e:
+            logger.exception("POST /ingest failed")
             raise HTTPException(status_code=503, detail="Embedding failed") from e
-
-
-def _extract_text_from_pdf(data: bytes) -> str:
-    """Extract text from PDF bytes. Returns concatenated text from all pages."""
-    reader = PdfReader(BytesIO(data))
-    parts = []
-    for page in reader.pages:
-        text = page.extract_text()
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
 
 
 @app.post("/ingest/pdf", response_model=IngestResponse)
@@ -344,7 +675,7 @@ async def ingest_pdf(request: Request):
     """
     Ingest a PDF file: multipart/form-data with required 'file' (PDF),
     optional doc_id, title, source, chunk_size, chunk_overlap.
-    Extracts text server-side then runs the same chunk/embed pipeline as POST /ingest.
+    Extracts text server-side (native text when strong; otherwise OCR / vision per server policy) then chunk/embed.
     """
     form = await request.form()
     file = form.get("file")
@@ -365,7 +696,11 @@ async def ingest_pdf(request: Request):
             detail="File does not appear to be a PDF.",
         )
     try:
-        text = _extract_text_from_pdf(raw)
+        pdf_mode_raw = form.get("pdf_text_mode")
+        pdf_mode = parse_pdf_text_mode(pdf_mode_raw if isinstance(pdf_mode_raw, str) else None)
+        text = await resolve_pdf_for_ingest(raw, pdf_mode)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("PDF extraction failed", exc_info=e)
         raise HTTPException(
@@ -376,7 +711,7 @@ async def ingest_pdf(request: Request):
     if not text:
         raise HTTPException(
             status_code=400,
-            detail="No text could be extracted; the PDF may be image-only or empty.",
+            detail="No text could be extracted from this PDF.",
         )
     filename = getattr(file, "filename", None) or "upload.pdf"
     doc_id_raw = form.get("doc_id")
@@ -413,13 +748,15 @@ async def ingest_pdf(request: Request):
         tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
     account_id_raw = form.get("account_id")
     account_id = str(account_id_raw).strip() or None if isinstance(account_id_raw, str) else None
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         try:
             return await ingest_text(
                 conn, doc_id, title, source, text, chunking_options,
                 confirm_duplicate_content=confirm_duplicate_content,
                 tags=tags_list,
                 account_id=account_id,
+                vault_original=(filename, raw),
+                persist_normalized_text_snapshot=False,
             )
         except DuplicateContentError as e:
             raise HTTPException(
@@ -430,10 +767,11 @@ async def ingest_pdf(request: Request):
             if "already exists" in str(e):
                 raise HTTPException(
                     status_code=409,
-                    detail="doc_id (document title) already exists. Use a different doc_id or delete the existing document first.",
+                    detail="A document with this ID already exists. Use a different document ID or delete the existing document first.",
                 ) from e
             raise
         except Exception as e:
+            logger.exception("POST /ingest/pdf failed")
             raise HTTPException(status_code=503, detail="Embedding failed") from e
 
 
@@ -515,13 +853,15 @@ async def ingest_image(request: Request):
         tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
     account_id_raw = form.get("account_id")
     account_id = str(account_id_raw).strip() or None if isinstance(account_id_raw, str) else None
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         try:
             return await ingest_text(
                 conn, doc_id, title, source, text, chunking_options,
                 confirm_duplicate_content=confirm_duplicate_content,
                 tags=tags_list,
                 account_id=account_id,
+                vault_original=(filename, raw),
+                persist_normalized_text_snapshot=False,
             )
         except DuplicateContentError as e:
             raise HTTPException(
@@ -532,11 +872,165 @@ async def ingest_image(request: Request):
             if "already exists" in str(e):
                 raise HTTPException(
                     status_code=409,
-                    detail="doc_id (document title) already exists. Use a different doc_id or delete the existing document first.",
+                    detail="A document with this ID already exists. Use a different document ID or delete the existing document first.",
                 ) from e
             raise
         except Exception as e:
+            logger.exception("POST /ingest/image failed")
             raise HTTPException(status_code=503, detail="Embedding failed") from e
+
+
+def _ingest_job_to_response(job: IngestJob) -> IngestJobStatusResponse:
+    return IngestJobStatusResponse(
+        id=job.id,
+        status=job.status.value,
+        kind=job.kind.value,
+        filename=job.filename,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        progress_pct=job.progress_pct,
+        stage=job.stage,
+        eta_seconds=job.eta_seconds,
+        estimated_completion_at=job.estimated_completion_at,
+        error=job.error,
+        result=job.result,
+    )
+
+
+@app.post("/ingest/jobs", response_model=IngestEnqueueResponse, status_code=202)
+async def ingest_jobs_enqueue(request: Request):
+    """
+    Queue one or more PDFs or images for background ingest (FIFO, one at a time).
+    Returns job ids immediately; poll GET /ingest/jobs/{id} for progress.
+    """
+    form = await request.form()
+    uploads = form.getlist("file")
+    if not uploads:
+        raise HTTPException(
+            status_code=400,
+            detail="multipart form must include one or more 'file' fields.",
+        )
+
+    doc_id_raw = form.get("doc_id")
+    form_doc_id = str(doc_id_raw).strip() if isinstance(doc_id_raw, str) else None
+    title_raw = form.get("title")
+    title = str(title_raw).strip() or None if isinstance(title_raw, str) else None
+    source_raw = form.get("source")
+    chunk_size = 800
+    chunk_overlap = 100
+    cs = form.get("chunk_size")
+    if cs is not None:
+        try:
+            chunk_size = int(cs) if isinstance(cs, str) else int(cs)
+        except (TypeError, ValueError):
+            pass
+    co = form.get("chunk_overlap")
+    if co is not None:
+        try:
+            chunk_overlap = int(co) if isinstance(co, str) else int(co)
+        except (TypeError, ValueError):
+            pass
+    try:
+        ChunkingOptions(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    confirm_duplicate = form.get("confirm_duplicate_content")
+    confirm_duplicate_content = str(confirm_duplicate).strip().lower() in ("1", "true", "yes")
+    tags_raw = form.get("tags")
+    tags_list = None
+    if tags_raw is not None and isinstance(tags_raw, str) and tags_raw.strip():
+        tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    account_id_raw = form.get("account_id")
+    account_id = str(account_id_raw).strip() or None if isinstance(account_id_raw, str) else None
+    pdf_mode_raw = form.get("pdf_text_mode")
+    try:
+        pdf_text_mode = parse_pdf_text_mode(pdf_mode_raw if isinstance(pdf_mode_raw, str) else None).value
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    store: IngestJobStore = request.app.state.ingest_job_store
+    out: list[IngestJobEnqueueItem] = []
+    multi = len(uploads) > 1
+
+    for upload in uploads:
+        if upload is None or not hasattr(upload, "read"):
+            continue
+        raw = await upload.read()
+        filename = getattr(upload, "filename", None) or "upload"
+        if raw.startswith(PDF_MAGIC):
+            if len(raw) > INGEST_PDF_MAX_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"PDF too large (max {INGEST_PDF_MAX_BYTES // (1024*1024)} MB): {filename}",
+                )
+            kind = IngestJobKind.PDF
+        elif _is_supported_image(raw):
+            if len(raw) > INGEST_IMAGE_MAX_BYTES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image too large (max {INGEST_IMAGE_MAX_BYTES // (1024*1024)} MB): {filename}",
+                )
+            kind = IngestJobKind.IMAGE
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File must be PDF or JPEG/PNG: {filename}",
+            )
+
+        suffix = Path(filename).suffix if filename else ""
+        fd, tmp_path = tempfile.mkstemp(prefix="ingestq_", suffix=suffix or ".bin")
+        try:
+            os.write(fd, raw)
+        finally:
+            os.close(fd)
+
+        if multi:
+            doc_id = str(uuid.uuid4())
+        else:
+            doc_id = (form_doc_id or "").strip() or str(uuid.uuid4())
+
+        source = (str(source_raw).strip() or filename) if isinstance(source_raw, str) else filename
+
+        job = IngestJob(
+            id=uuid.uuid4().hex,
+            kind=kind,
+            filename=filename,
+            temp_path=tmp_path,
+            doc_id=doc_id,
+            title=title,
+            source=source,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            confirm_duplicate_content=confirm_duplicate_content,
+            tags=tags_list,
+            account_id=account_id,
+            pdf_text_mode=pdf_text_mode,
+        )
+        await store.add(job)
+        out.append(IngestJobEnqueueItem(job_id=job.id, filename=filename))
+
+    if not out:
+        raise HTTPException(status_code=400, detail="No valid files in request.")
+    return IngestEnqueueResponse(jobs=out)
+
+
+@app.get("/ingest/jobs/{job_id}", response_model=IngestJobStatusResponse)
+async def get_ingest_job(request: Request, job_id: str):
+    store: IngestJobStore = request.app.state.ingest_job_store
+    job = await store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _ingest_job_to_response(job)
+
+
+@app.get("/ingest/jobs", response_model=list[IngestJobStatusResponse])
+async def list_ingest_jobs(request: Request, ids: str | None = None, limit: int = 50):
+    store: IngestJobStore = request.app.state.ingest_job_store
+    if ids:
+        id_list = [x.strip() for x in ids.split(",") if x.strip()]
+        jobs = await store.list_ids(id_list)
+    else:
+        jobs = await store.list_recent(min(limit, 200))
+    return [_ingest_job_to_response(j) for j in jobs]
 
 
 @app.post("/ingest/google-drive", response_model=IngestGoogleDriveResponse)
@@ -554,7 +1048,7 @@ async def ingest_google_drive(request: Request, body: IngestGoogleDriveRequest):
     skipped = 0
     errors: list[str] = []
     doc_ids: list[str] = []
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         for doc in docs:
             try:
                 await ingest_text(
@@ -564,6 +1058,7 @@ async def ingest_google_drive(request: Request, body: IngestGoogleDriveRequest):
                     doc.source,
                     doc.text,
                     default_opts,
+                    persist_normalized_text_snapshot=False,
                 )
                 ingested += 1
                 doc_ids.append(doc.doc_id)
@@ -590,204 +1085,361 @@ def _elapsed_ms(start: float) -> int:
 @app.post("/ask", response_model=AskResponse)
 async def ask(request: Request, ask_request: AskRequest):
     """RAG over documents plus optional Layer 2 (your data) summary so user can ask about CDs, obligations, etc."""
+    await _check_ingest_busy(request)
     t0 = time.perf_counter()
-    logger.info("Ask: embedding question")
-    with sqlite3.connect(request.app.state.db_path) as conn:
-        rate_limiter = request.app.state.rate_limiter
-        embedder = HttpEmbedder()
-        query_vectors = await embedder.embed_many([ask_request.question])
-        query_vec = query_vectors[0]
-        embed_ms = _elapsed_ms(t0)
-        logger.info("Ask: embedding done in %d ms, retrieving chunks", embed_ms)
+    trace_ctx = _ask_trace_from_request(request, ask_request.question)
+    with ask_trace_scope(trace_ctx):
+        _log_ask_begin(ask_request)
+        with app_db_connection(request.app) as conn:
+            rate_limiter = request.app.state.rate_limiter
+            t_build = time.perf_counter()
+            prompt, top_chunks, route, has_context, direct_answer = await build_prompt_and_chunks(conn, ask_request)
+            build_ms = _elapsed_ms(t_build)
+            logger.info(
+                "Ask: graph build done in %d ms route=%s chunks=%d",
+                build_ms,
+                route,
+                len(top_chunks),
+            )
+            if not has_context:
+                total_ms = _elapsed_ms(t0)
+                logger.info("Ask: early return (no context) total=%d ms", total_ms)
+                log_ask_event(
+                    "ask_early_exit",
+                    reason="no_context",
+                    graph_route=route,
+                    top_chunks=len(top_chunks),
+                    total_ms=total_ms,
+                )
+                return AskResponse(
+                    answer="I don't have relevant context or data to answer that question.",
+                    top_chunks=[],
+                    tables=[],
+                    charts=[],
+                )
 
-        t1 = time.perf_counter()
-        filter_doc_ids = None
-        if ask_request.doc_ids:
-            filter_doc_ids = ask_request.doc_ids
-        elif ask_request.tag and ask_request.tag.strip():
-            filter_doc_ids = get_doc_ids_by_tag(conn, ask_request.tag.strip())
-        elif ask_request.doc_id and ask_request.doc_id.strip():
-            filter_doc_ids = [ask_request.doc_id.strip()]
-        initial_k = (
-            min(RERANK_INITIAL_K_MULTIPLIER * ask_request.top_k, RERANK_INITIAL_K_MAX)
-            if RERANK_ENABLED
-            else ask_request.top_k
-        )
-        top_chunks = retrieve_top_k(conn, query_vec, initial_k, doc_id=None, doc_ids=filter_doc_ids)
-        retrieval_ms = _elapsed_ms(t1)
-        logger.info("Ask: retrieval done in %d ms (%d chunks)", retrieval_ms, len(top_chunks))
+            if direct_answer:
+                total_ms = _elapsed_ms(t0)
+                logger.info("Ask: fast path in %d ms route=%s", total_ms, route)
+                return AskResponse(
+                    answer=normalize_markdown_layout(direct_answer),
+                    top_chunks=top_chunks,
+                    tables=[],
+                    charts=[],
+                )
 
-        rerank_ms = 0
-        if RERANK_ENABLED and top_chunks:
-            t_rerank = time.perf_counter()
-            top_chunks = rerank(ask_request.question, top_chunks, ask_request.top_k)
-            rerank_ms = _elapsed_ms(t_rerank)
-            logger.info("Ask: re-rank done in %d ms (%d chunks)", rerank_ms, len(top_chunks))
-        elif len(top_chunks) > ask_request.top_k:
-            top_chunks = top_chunks[: ask_request.top_k]
+            t3 = time.perf_counter()
+            await rate_limiter.acquire()
+            rate_limit_ms = _elapsed_ms(t3)
+            if rate_limit_ms > 0:
+                logger.info("Ask: rate limit wait %d ms", rate_limit_ms)
 
-        t2 = time.perf_counter()
-        MAX_CONTEXT_CHARS = 8000
-        context_parts = []
-        total_len = 0
-        data_summary = _build_data_summary(conn)
-        if data_summary:
-            block = "Your data (accounts, positions, obligations):\n" + data_summary + "\n\n"
-            if total_len + len(block) <= MAX_CONTEXT_CHARS:
-                context_parts.append(block)
-                total_len += len(block)
-        for c in top_chunks:
-            block = f"[doc_id={c.doc_id} chunk_id={c.chunk_id}]\n{c.content_snippet}\n"
-            if total_len + len(block) > MAX_CONTEXT_CHARS:
-                break
-            context_parts.append(block)
-            total_len += len(block)
-        context_str = "\n".join(context_parts) if context_parts else "(No documents or data loaded.)"
-        data_summary_ms = _elapsed_ms(t2)
-        logger.info("Ask: data summary + context build in %d ms (%d chars)", data_summary_ms, len(context_str))
-
-        prompt = (
-            "Answer using the context below (your data and/or document chunks). If the context doesn't contain enough information, say so.\n\n"
-            "Context:\n" + context_str + "\n\n"
-            "Question: " + ask_request.question
-        )
-        if not context_parts or (not top_chunks and not data_summary):
+            t4 = time.perf_counter()
+            raw_answer = await llm_client.answer_with_context(prompt)
+            body, tail = split_structured(raw_answer)
+            answer, tables, charts = merge_structured_to_response(body, tail)
+            answer = normalize_markdown_layout(answer)
+            llm_ms = _elapsed_ms(t4)
             total_ms = _elapsed_ms(t0)
             logger.info(
-                "Ask: early return (no context) total=%d ms (embed=%d retrieval=%d rerank=%d data_summary+context=%d)",
-                total_ms, embed_ms, retrieval_ms, rerank_ms, data_summary_ms,
+                "Ask: LLM done in %d ms | total=%d ms (build=%d rate_limit=%d llm=%d)",
+                llm_ms,
+                total_ms,
+                build_ms,
+                rate_limit_ms,
+                llm_ms,
             )
-            return AskResponse(answer="I don't have relevant context or data to answer that question.", top_chunks=[])
+            return AskResponse(answer=answer, top_chunks=top_chunks, tables=tables, charts=charts)
 
-        t3 = time.perf_counter()
-        await rate_limiter.acquire()
-        rate_limit_ms = _elapsed_ms(t3)
-        if rate_limit_ms > 0:
-            logger.info("Ask: rate limit wait %d ms", rate_limit_ms)
 
-        t4 = time.perf_counter()
-        answer = await llm_client.answer_with_context(prompt)
-        llm_ms = _elapsed_ms(t4)
-        total_ms = _elapsed_ms(t0)
-        logger.info(
-            "Ask: LLM done in %d ms | total=%d ms (embed=%d retrieval=%d rerank=%d data_summary+context=%d rate_limit=%d llm=%d)",
-            llm_ms, total_ms, embed_ms, retrieval_ms, rerank_ms, data_summary_ms, rate_limit_ms, llm_ms,
+def _is_portable_profile() -> bool:
+    return _portable_profile() in ("portable", "low_spec")
+
+
+def _ask_job_to_response(job: AskJob) -> AskJobStatusResponse:
+    return AskJobStatusResponse(
+        id=job.id,
+        status=job.status.value if hasattr(job.status, "value") else str(job.status),
+        stage=job.stage,
+        progress_pct=job.progress_pct,
+        eta_seconds=job.eta_seconds,
+        error=job.error,
+        answer=job.answer,
+        route=job.route,
+        top_chunks=job.top_chunks,
+        tables=job.tables,
+        charts=job.charts,
+    )
+
+
+async def _check_ingest_busy(request: Request) -> None:
+    if not _is_portable_profile():
+        return
+    store: IngestJobStore = request.app.state.ingest_job_store
+    if await store.has_running_job():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document processing is running. Wait for ingest to finish, "
+                "or use background Ask (queued mode) instead."
+            ),
         )
-        return AskResponse(answer=answer, top_chunks=top_chunks)
 
 
-async def _stream_ask_generator(prompt: str, top_chunks: list, stream_start_time: float | None = None):
-    """Yield NDJSON lines: first line has top_chunks, then deltas from LLM, then done."""
+def _structured_payload(answer: str, tables=None, charts=None) -> dict[str, Any]:
+    return {
+        "answer": answer,
+        "tables": [t.model_dump() for t in (tables or [])],
+        "charts": [c.model_dump() for c in (charts or [])],
+    }
+
+
+async def _stream_direct_answer(answer: str, top_chunks: list | None = None):
+    msg = normalize_markdown_layout(answer)
+    structured = _structured_payload(msg, [], [])
+    yield json.dumps({"phase": "done"}) + "\n"
+    yield json.dumps(
+        {
+            "top_chunks": top_chunks or [],
+            "answer": msg,
+            "structured": structured,
+            "done": True,
+        }
+    ) + "\n"
+
+
+async def _stream_ask_full(
+    request: Request,
+    ask_request: AskRequest,
+    trace_ctx: AskTraceContext,
+    stream_start_time: float,
+):
+    """NDJSON stream: phases during build, then chunks/deltas/structured/done."""
+    phase_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def progress_cb(stage: str) -> None:
+        await phase_queue.put(stage)
+
+    build_result: list[Any] = []
+
+    async def run_build():
+        with app_db_connection(request.app) as conn:
+            build_result.append(
+                await build_prompt_and_chunks(conn, ask_request, progress_cb=progress_cb)
+            )
+        await phase_queue.put(None)
+
+    yield json.dumps({"phase": "routing"}) + "\n"
+    build_task = asyncio.create_task(run_build())
+
+    while True:
+        if build_task.done() and phase_queue.empty():
+            break
+        try:
+            phase = await asyncio.wait_for(phase_queue.get(), timeout=0.25)
+        except asyncio.TimeoutError:
+            continue
+        if phase is None:
+            break
+        yield json.dumps({"phase": phase}) + "\n"
+
+    if build_task is not None:
+        await build_task
+
+    prompt, top_chunks, route, has_context, direct_answer = build_result[0]
+    build_ms = _elapsed_ms(stream_start_time)
+    logger.info(
+        "Ask/stream: graph build done in %d ms route=%s chunks=%d",
+        build_ms,
+        route,
+        len(top_chunks),
+    )
+
+    if not has_context:
+        msg = "I don't have relevant context or data to answer that question."
+        async for line in _stream_direct_answer(msg, []):
+            yield line
+        return
+
+    meta = {"top_chunks": [c.model_dump() if hasattr(c, "model_dump") else c for c in top_chunks]}
+    yield json.dumps(meta) + "\n"
+
+    if direct_answer:
+        async for line in _stream_direct_answer(direct_answer, meta["top_chunks"]):
+            yield line
+        return
+
+    rate_limiter = request.app.state.rate_limiter
+    await rate_limiter.acquire()
+    if ASK_COOLDOWN_AFTER_PREP_SEC > 0:
+        await asyncio.sleep(ASK_COOLDOWN_AFTER_PREP_SEC)
+
+    yield json.dumps({"phase": "generating"}) + "\n"
+    async for line in _stream_ask_generator(
+        prompt,
+        top_chunks,
+        stream_start_time=stream_start_time,
+        trace_ctx=trace_ctx,
+        skip_meta=True,
+    ):
+        yield line
+
+
+async def _stream_ask_generator(
+    prompt: str,
+    top_chunks: list,
+    stream_start_time: float | None = None,
+    trace_ctx: AskTraceContext | None = None,
+    *,
+    skip_meta: bool = False,
+):
+    """Yield NDJSON lines: optional top_chunks, then deltas from LLM, then structured, then done."""
     t0 = stream_start_time if stream_start_time is not None else time.perf_counter()
     t_llm_start = time.perf_counter()
     logger.info("Ask/stream: generator started, LLM stream starting")
-    meta = {"top_chunks": [c.model_dump() if hasattr(c, "model_dump") else c for c in top_chunks]}
-    yield json.dumps(meta) + "\n"
+    if not skip_meta:
+        meta = {"top_chunks": [c.model_dump() if hasattr(c, "model_dump") else c for c in top_chunks]}
+        yield json.dumps(meta) + "\n"
     first_delta = True
+    accumulated = ""
+
     try:
-        async for delta in llm_client.answer_with_context_stream(prompt):
-            if first_delta:
-                first_delta_ms = _elapsed_ms(t_llm_start)
-                logger.info("Ask/stream: first LLM delta in %d ms", first_delta_ms)
-                first_delta = False
-            yield json.dumps({"delta": delta}) + "\n"
-    except Exception:
-        yield json.dumps({"error": "LLM stream failed"}) + "\n"
+        if trace_ctx is not None:
+            with ask_trace_scope(trace_ctx):
+                async for delta in llm_client.answer_with_context_stream(prompt):
+                    accumulated += delta
+                    if first_delta:
+                        first_delta_ms = _elapsed_ms(t_llm_start)
+                        logger.info("Ask/stream: first LLM delta in %d ms", first_delta_ms)
+                        first_delta = False
+                    yield json.dumps({"delta": delta}) + "\n"
+        else:
+            async for delta in llm_client.answer_with_context_stream(prompt):
+                accumulated += delta
+                if first_delta:
+                    first_delta_ms = _elapsed_ms(t_llm_start)
+                    logger.info("Ask/stream: first LLM delta in %d ms", first_delta_ms)
+                    first_delta = False
+                yield json.dumps({"delta": delta}) + "\n"
+    except Exception as e:
+        logger.exception("Ask/stream: LLM stream failed")
+        llm_ms = _elapsed_ms(t_llm_start)
+        total_ms = _elapsed_ms(t0)
+        logger.info("Ask/stream: LLM stream failed after %d ms, total=%d ms", llm_ms, total_ms)
+        rid = trace_ctx.request_id if trace_ctx else None
+        if isinstance(e, httpx.ConnectError):
+            detail = (
+                "Cannot reach the AI backend. It may still be starting or offline. "
+                "Ask the administrator to check Ledgerly logs or Docker/Ollama."
+            )
+            code = "upstream_connect"
+        elif isinstance(e, httpx.ConnectTimeout):
+            detail = (
+                "Timed out connecting to the AI backend. If this persists, the administrator "
+                "should verify Ollama is running and reachable from Ledgerly."
+            )
+            code = "upstream_connect"
+        elif isinstance(e, httpx.ReadTimeout):
+            detail = (
+                "The AI backend took too long to respond. Wait and try again, or ask "
+                "the administrator to check model load or increase timeouts."
+            )
+            code = "llm_timeout"
+        elif isinstance(e, httpx.TimeoutException):
+            detail = (
+                "The AI backend did not respond in time. Ask the administrator to check "
+                "Ledgerly and Ollama status."
+            )
+            code = "llm_timeout"
+        elif isinstance(e, LLMServiceError):
+            detail = str(e).strip() or "The AI backend returned an error."
+            code = "llm_service"
+        elif isinstance(e, LLMRateLimitedError):
+            detail = "Too many assistant requests too quickly. Wait a minute and try again."
+            code = "rate_limit"
+        else:
+            detail = (
+                "The assistant could not finish streaming this answer. "
+                "If it keeps happening, contact the person who runs Ledgerly."
+            )
+            code = "llm_stream_failed"
+        err_line: dict[str, Any] = {"error": detail, "code": code, "done": True}
+        if rid:
+            err_line["request_id"] = rid
+        yield json.dumps(err_line) + "\n"
+        return
     llm_ms = _elapsed_ms(t_llm_start)
     total_ms = _elapsed_ms(t0)
     logger.info("Ask/stream: LLM stream done in %d ms, total=%d ms", llm_ms, total_ms)
+    body, tail = split_structured(accumulated)
+    answer, tables, charts = merge_structured_to_response(body, tail)
+    answer = normalize_markdown_layout(answer)
+    structured = {
+        "answer": answer,
+        "tables": [t.model_dump() for t in tables],
+        "charts": [c.model_dump() for c in charts],
+    }
+    yield json.dumps({"structured": structured}) + "\n"
     yield json.dumps({"done": True}) + "\n"
 
 
 @app.post("/ask/stream")
 async def ask_stream(request: Request, ask_request: AskRequest):
-    """RAG same as /ask but streams the LLM response as NDJSON: first line = {top_chunks}, then {delta}, then {done}."""
+    """RAG same as /ask but streams NDJSON with phase progress, chunks, deltas, structured, done."""
+    await _check_ingest_busy(request)
     t0 = time.perf_counter()
     question_preview = (ask_request.question or "")[:80]
-    logger.info("Ask/stream: start question=%s", question_preview)
-    with sqlite3.connect(request.app.state.db_path) as conn:
-        rate_limiter = request.app.state.rate_limiter
-        embedder = HttpEmbedder()
-        query_vectors = await embedder.embed_many([ask_request.question])
-        query_vec = query_vectors[0]
-        embed_ms = _elapsed_ms(t0)
-        logger.info("Ask/stream: embedding done in %d ms", embed_ms)
+    trace_ctx = _ask_trace_from_request(request, ask_request.question)
+    with ask_trace_scope(trace_ctx):
+        _log_ask_begin(ask_request)
+        logger.info("Ask/stream: start question=%s", question_preview)
 
-        t1 = time.perf_counter()
-        filter_doc_ids = None
-        if ask_request.doc_ids:
-            filter_doc_ids = ask_request.doc_ids
-        elif ask_request.tag and ask_request.tag.strip():
-            filter_doc_ids = get_doc_ids_by_tag(conn, ask_request.tag.strip())
-        elif ask_request.doc_id and ask_request.doc_id.strip():
-            filter_doc_ids = [ask_request.doc_id.strip()]
-        initial_k = (
-            min(RERANK_INITIAL_K_MULTIPLIER * ask_request.top_k, RERANK_INITIAL_K_MAX)
-            if RERANK_ENABLED
-            else ask_request.top_k
-        )
-        top_chunks = retrieve_top_k(conn, query_vec, initial_k, doc_id=None, doc_ids=filter_doc_ids)
-        retrieval_ms = _elapsed_ms(t1)
-        logger.info("Ask/stream: retrieval done in %d ms (%d chunks)", retrieval_ms, len(top_chunks))
+        async def body():
+            with ask_trace_scope(trace_ctx):
+                async for line in _stream_ask_full(request, ask_request, trace_ctx, t0):
+                    yield line
 
-        if RERANK_ENABLED and top_chunks:
-            t_rerank = time.perf_counter()
-            top_chunks = rerank(ask_request.question, top_chunks, ask_request.top_k)
-            rerank_ms = _elapsed_ms(t_rerank)
-            logger.info("Ask/stream: re-rank done in %d ms (%d chunks)", rerank_ms, len(top_chunks))
-        elif len(top_chunks) > ask_request.top_k:
-            top_chunks = top_chunks[: ask_request.top_k]
+        return StreamingResponse(body(), media_type="application/x-ndjson")
 
-        t2 = time.perf_counter()
-        MAX_CONTEXT_CHARS = 8000
-        context_parts = []
-        total_len = 0
-        data_summary = _build_data_summary(conn)
-        if data_summary:
-            block = "Your data (accounts, positions, obligations):\n" + data_summary + "\n\n"
-            if total_len + len(block) <= MAX_CONTEXT_CHARS:
-                context_parts.append(block)
-                total_len += len(block)
-        for c in top_chunks:
-            block = f"[doc_id={c.doc_id} chunk_id={c.chunk_id}]\n{c.content_snippet}\n"
-            if total_len + len(block) > MAX_CONTEXT_CHARS:
-                break
-            context_parts.append(block)
-            total_len += len(block)
-        context_str = "\n".join(context_parts) if context_parts else "(No documents or data loaded.)"
-        data_summary_ms = _elapsed_ms(t2)
-        logger.info("Ask/stream: data summary + context build in %d ms (%d chars)", data_summary_ms, len(context_str))
 
-        prompt = (
-            "Answer using the context below (your data and/or document chunks). If the context doesn't contain enough information, say so.\n\n"
-            "Context:\n" + context_str + "\n\n"
-            "Question: " + ask_request.question
-        )
-        if not context_parts or (not top_chunks and not data_summary):
-            total_ms = _elapsed_ms(t0)
-            logger.info("Ask/stream: early return (no context) total=%d ms", total_ms)
-            async def no_context_stream():
-                yield json.dumps({
-                    "top_chunks": [],
-                    "answer": "I don't have relevant context or data to answer that question.",
-                    "done": True,
-                }) + "\n"
+@app.post("/ask/jobs", response_model=AskJobEnqueueResponse, status_code=202)
+async def ask_jobs_enqueue(request: Request, ask_request: AskRequest):
+    """Queue a question for background processing (one at a time, paced for CPU)."""
+    await _check_ingest_busy(request)
+    import time as _time
 
-            return StreamingResponse(
-                no_context_stream(),
-                media_type="application/x-ndjson",
-            )
-
-        t3 = time.perf_counter()
-        await rate_limiter.acquire()
-        rate_limit_ms = _elapsed_ms(t3)
-        if rate_limit_ms > 0:
-            logger.info("Ask/stream: rate limit wait %d ms", rate_limit_ms)
-
-    return StreamingResponse(
-        _stream_ask_generator(prompt, top_chunks, stream_start_time=t0),
-        media_type="application/x-ndjson",
+    store: AskJobStore = request.app.state.ask_job_store
+    job = AskJob(
+        id=uuid.uuid4().hex,
+        question=ask_request.question.strip(),
+        top_k=ask_request.top_k,
+        doc_id=ask_request.doc_id,
+        tag=ask_request.tag,
+        use_rag=ask_request.use_rag,
+        eta_seconds=ASK_QUEUE_ESTIMATED_WAIT_SEC,
+        created_at=_time.time(),
     )
+    pending = await store.pending_count()
+    est = ASK_QUEUE_ESTIMATED_WAIT_SEC + pending * 120
+    job.eta_seconds = est
+    await store.add(job)
+    return AskJobEnqueueResponse(job_id=job.id, estimated_wait_sec=est)
+
+
+@app.get("/ask/jobs/{job_id}", response_model=AskJobStatusResponse)
+async def get_ask_job(request: Request, job_id: str):
+    store: AskJobStore = request.app.state.ask_job_store
+    job = await store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Ask job not found")
+    return _ask_job_to_response(job)
+
+
+@app.get("/ask/jobs", response_model=list[AskJobStatusResponse])
+async def list_ask_jobs(request: Request, limit: int = 20):
+    store: AskJobStore = request.app.state.ask_job_store
+    jobs = await store.list_recent(limit=limit)
+    return [_ask_job_to_response(j) for j in jobs]
 
 
 # Max image size for POST /ask/image (file upload or URL fetch)
@@ -872,83 +1524,516 @@ async def ask_image(request: Request):
 @app.post("/ask/general", response_model=AskGeneralResponse)
 async def ask_general(request: Request, body: AskGeneralRequest):
     """
-    General-path only: templated prompts sent to OpenAI. No RAG, no user docs, no PII.
-    Use template + optional amount/term_months; server builds a sanitized prompt.
+    General-path only: templated or custom prompts sent to OpenAI. No RAG, no user documents.
+    Use template + optional amount/term_months for CD templates, or template=custom + question.
     """
-    logger.info(
-        "Ask/general: start template=%s amount=%s term_months=%s",
-        body.template, body.amount, body.term_months,
-    )
-    if body.template == "cd_rates_summary":
-        prompt = "Summarize the current US CD rate environment in 2-3 sentences."
-    elif body.template == "cd_advice":
-        amount_str = f"${body.amount:,.0f}" if body.amount is not None else "an amount"
-        term_str = f" {body.term_months}-month" if body.term_months is not None else ""
-        prompt = (
-            f"What should someone do if they have {amount_str} in a{term_str} CD maturing now? "
-            "Give 2-3 short options."
+    trace_q = (body.question or "") if body.template == "custom" else f"template:{body.template}"
+    trace_ctx = _ask_trace_from_request(request, trace_q)
+    with ask_trace_scope(trace_ctx):
+        log_ask_event(
+            "ask_general_begin",
+            template=body.template,
+            amount_set=body.amount is not None,
+            term_months_set=body.term_months is not None,
+            question_len=len(body.question or ""),
         )
-    else:
-        raise HTTPException(status_code=400, detail="Unknown template")
-    logger.info("Ask/general: prompt (sanitized) length=%d chars", len(prompt))
-    answer = await llm_client.answer_openai(prompt)
-    logger.info("Ask/general: done answer_length=%s", len(answer) if answer else 0)
-    if answer is None:
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAI not configured (set OPENAI_API_KEY for general-path advice).",
+        rate_limiter = request.app.state.rate_limiter
+        logger.info(
+            "Ask/general: start template=%s amount=%s term_months=%s",
+            body.template,
+            body.amount,
+            body.term_months,
         )
-    return AskGeneralResponse(answer=answer)
+        if body.template == "custom" and body.question:
+            logger.info(
+                "Ask/general: custom question preview=%s",
+                body.question[:80] + ("…" if len(body.question) > 80 else ""),
+            )
+        if body.template == "cd_rates_summary":
+            prompt = "Summarize the current US CD rate environment in 2-3 sentences." + ANSWER_FORMAT_PROMPT_SUFFIX
+        elif body.template == "cd_advice":
+            amount_str = f"${body.amount:,.0f}" if body.amount is not None else "an amount"
+            term_str = f" {body.term_months}-month" if body.term_months is not None else ""
+            prompt = (
+                f"What should someone do if they have {amount_str} in a{term_str} CD maturing now? "
+                "Give 2-3 short options."
+            ) + ANSWER_FORMAT_PROMPT_SUFFIX
+        elif body.template == "custom":
+            # Validated by AskGeneralRequest: non-empty question for custom.
+            q = body.question or ""
+            prompt = (
+                "You are a concise financial education assistant. Answer clearly and briefly. "
+                "Do not provide personalized investment, tax, or legal advice; give general information only. "
+                "If the question is not finance-related, answer helpfully in a short way.\n\n"
+                "Question:\n"
+                + q
+            ) + ANSWER_FORMAT_PROMPT_SUFFIX
+        else:
+            raise HTTPException(status_code=400, detail="Unknown template")
+        logger.info("Ask/general: prompt length=%d chars", len(prompt))
+        await rate_limiter.acquire()
+        raw_answer = await llm_client.answer_openai(prompt)
+        logger.info("Ask/general: done answer_length=%s", len(raw_answer) if raw_answer else 0)
+        if raw_answer is None:
+            raise HTTPException(
+                status_code=503,
+                detail="OpenAI not configured (set OPENAI_API_KEY for general-path advice).",
+            )
+        resp_body, tail = split_structured(raw_answer)
+        answer, tables, charts = merge_structured_to_response(resp_body, tail)
+        answer = normalize_markdown_layout(answer)
+        return AskGeneralResponse(answer=answer, tables=tables, charts=charts)
 
 
 @app.get("/documents", response_model=DocumentsListResponse)
 def get_documents(request: Request):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         rows = list_documents(conn)
-        documents = [
-            DocumentSummary(
-                doc_id=r[0],
-                title=r[1],
-                source=r[2],
-                created_at=r[3],
-                num_chunks=r[4],
-                snippet=r[5],
-                tags=r[6] if len(r) > 6 else [],
-                linked_account_ids=r[7] if len(r) > 7 else [],
-            )
-            for r in rows
-        ]
+        documents = [_document_summary_from_row(r) for r in rows]
         return DocumentsListResponse(documents=documents)
+
+
+@app.get("/vault/status", response_model=VaultStatusResponse)
+def get_vault_status() -> VaultStatusResponse:
+    if not originals_vault_mod.vault_enabled():
+        return VaultStatusResponse(
+            enabled=False,
+            watcher_mode=resolve_vault_incoming_mode(),
+            root=None,
+            writable=None,
+            originals_dir=None,
+            incoming_dir=None,
+            pending_dir=None,
+            root_source=None,
+        )
+    r = originals_vault_mod.vault_root()
+    wr = originals_vault_mod.vault_writable()
+    o, inc, pend = originals_vault_mod.originals_dir(), originals_vault_mod.incoming_dir(), originals_vault_mod.pending_dir()
+    originals_vault_mod.ensure_vault_layout()
+    return VaultStatusResponse(
+        enabled=True,
+        watcher_mode=resolve_vault_incoming_mode(),
+        root=str(r) if r else None,
+        writable=wr,
+        originals_dir=str(o) if o else None,
+        incoming_dir=str(inc) if inc else None,
+        pending_dir=str(pend) if pend else None,
+        root_source=effective_vault_root_source(),
+    )
+
+
+@app.get("/vault/settings/config-allowed", response_model=VaultSettingsConfigAllowedResponse)
+def get_vault_settings_config_allowed(request: Request) -> VaultSettingsConfigAllowedResponse:
+    return VaultSettingsConfigAllowedResponse(allowed=_request_may_configure_vault(request))
+
+
+@app.get("/vault/settings", response_model=VaultSettingsGetResponse)
+def get_vault_settings() -> VaultSettingsGetResponse:
+    snap = file_settings_snapshot()
+    eff_root = resolve_vault_root()
+    mode = resolve_vault_incoming_mode()
+    env_ctl = vault_root_is_from_env()
+    fr = str(snap.get("root", "")).strip() if snap else None
+    if not fr:
+        fr = None
+    fm = snap.get("incoming_mode") if snap else None
+    fm_s = str(fm).strip().lower() if fm is not None else None
+    if fm_s not in ("off", "watch_auto", "watch_review"):
+        fm_s = None
+    wr = originals_vault_mod.vault_writable() if eff_root else None
+    o = inc_dir = pnd = None
+    if eff_root:
+        originals_vault_mod.ensure_vault_layout()
+        od, idir, pd = (
+            originals_vault_mod.originals_dir(),
+            originals_vault_mod.incoming_dir(),
+            originals_vault_mod.pending_dir(),
+        )
+        o = str(od) if od else None
+        inc_dir = str(idir) if idir else None
+        pnd = str(pd) if pd else None
+    return VaultSettingsGetResponse(
+        effective_root=str(eff_root) if eff_root else None,
+        effective_incoming_mode=mode,
+        root_source=effective_vault_root_source(),
+        file_root=fr,
+        file_incoming_mode=fm_s,
+        writable=wr,
+        originals_dir=o,
+        incoming_dir=inc_dir,
+        pending_dir=pnd,
+        env_controls_settings=env_ctl,
+    )
+
+
+@app.put("/vault/settings", response_model=VaultSettingsGetResponse)
+async def put_vault_settings(request: Request, body: VaultSettingsPutRequest) -> VaultSettingsGetResponse:
+    if not _request_may_configure_vault(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Vault settings can be changed from localhost or set ALLOW_REMOTE_VAULT_SETTINGS=true.",
+        )
+    if vault_root_is_from_env():
+        raise HTTPException(
+            status_code=400,
+            detail="Vault root is set via LEDGERLY_ORIGINALS_VAULT; unset it to use saved settings from the UI.",
+        )
+    m = body.incoming_mode.strip().lower()
+    if m not in ("off", "watch_auto", "watch_review"):
+        raise HTTPException(status_code=400, detail="incoming_mode must be off, watch_auto, or watch_review")
+    if "root" in body.model_fields_set:
+        root_str = (body.root or "").strip()
+    else:
+        snap = file_settings_snapshot() or {}
+        root_str = str(snap.get("root") or "").strip()
+    if root_str:
+        vr = validate_vault_root_path(root_str)
+        if not vr.valid:
+            raise HTTPException(status_code=400, detail=vr.detail or "Invalid vault directory")
+        write_root = vr.resolved_root or ""
+    else:
+        write_root = ""
+    write_vault_settings_file(write_root if write_root else None, m)
+    await restart_vault_watcher_app(request.app)
+    return get_vault_settings()
+
+
+@app.post("/vault/settings/verify-root", response_model=VaultRootVerifyResponse)
+def post_vault_settings_verify_root(request: Request, body: VaultRootVerifyRequest) -> VaultRootVerifyResponse:
+    if not _request_may_configure_vault(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Vault settings can be changed from localhost or set ALLOW_REMOTE_VAULT_SETTINGS=true.",
+        )
+    if vault_root_is_from_env():
+        raise HTTPException(
+            status_code=400,
+            detail="Vault root is set via LEDGERLY_ORIGINALS_VAULT; unset it to use saved settings from the UI.",
+        )
+    vr = validate_vault_root_path(body.root)
+    return VaultRootVerifyResponse(
+        valid=vr.valid,
+        resolved_root=vr.resolved_root,
+        incoming_dir=vr.incoming_dir,
+        pending_dir=vr.pending_dir,
+        originals_dir=vr.originals_dir,
+        detail=vr.detail,
+    )
+
+
+@app.post("/vault/settings/native-pick-folder", response_model=VaultNativePickFolderResponse)
+async def post_vault_settings_native_pick_folder(request: Request) -> VaultNativePickFolderResponse:
+    client = request.client
+    if not _client_host_is_loopback(client.host if client else None):
+        raise HTTPException(
+            status_code=403,
+            detail="Native folder picker is only allowed from localhost.",
+        )
+    if vault_root_is_from_env():
+        raise HTTPException(
+            status_code=400,
+            detail="Vault root is set via LEDGERLY_ORIGINALS_VAULT; unset it to use saved settings from the UI.",
+        )
+    try:
+        result = await asyncio.to_thread(pick_native_folder)
+    except NativeFolderDialogUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return VaultNativePickFolderResponse(path=result.path, cancelled=result.cancelled)
+
+
+@app.get("/vault/pending", response_model=list[str])
+def list_vault_pending() -> list[str]:
+    """List files under vault/pending/ (watch_review) as relative POSIX paths (nested dirs included)."""
+    if not originals_vault_mod.vault_enabled():
+        raise HTTPException(status_code=400, detail="LEDGERLY_ORIGINALS_VAULT is not set")
+    from app.vault_pathutil import list_pending_relative_paths
+
+    return list_pending_relative_paths()
+
+
+@app.post("/vault/pending/ingest", response_model=IngestJobEnqueueItem, status_code=202)
+async def ingest_vault_pending_by_path(
+    request: Request, body: VaultPendingIngestRequest
+) -> IngestJobEnqueueItem:
+    """Enqueue ingest for a file under pending/ by relative path (supports subfolders)."""
+    if not originals_vault_mod.vault_enabled():
+        raise HTTPException(status_code=400, detail="LEDGERLY_ORIGINALS_VAULT is not set")
+    from app.vault_pathutil import enqueue_raw_as_ingest_job, resolve_pending_relative_path
+
+    dest = resolve_pending_relative_path(body.relative_path)
+    if dest is None:
+        raise HTTPException(status_code=404, detail="File not found in vault pending/")
+    raw = dest.read_bytes()
+    rel_norm = body.relative_path.strip().replace("\\", "/").lstrip("/")
+    store = request.app.state.ingest_job_store
+    keep_rel = f"{originals_vault_mod.REL_PENDING}/{rel_norm}"
+    jid, err = await enqueue_raw_as_ingest_job(
+        store,
+        raw,
+        rel_norm,
+        remove_source_after=None,
+        keep_incoming_original_rel=keep_rel,
+    )
+    if err or not jid:
+        raise HTTPException(status_code=400, detail=err or "Could not enqueue ingest job")
+    return IngestJobEnqueueItem(job_id=jid, filename=rel_norm)
+
+
+@app.post("/vault/pending/{filename}/ingest", response_model=IngestJobEnqueueItem, status_code=202)
+async def ingest_vault_pending_file(request: Request, filename: str) -> IngestJobEnqueueItem:
+    if not originals_vault_mod.vault_enabled():
+        raise HTTPException(status_code=400, detail="LEDGERLY_ORIGINALS_VAULT is not set")
+    from app.vault_pathutil import enqueue_raw_as_ingest_job, safe_pending_destination
+
+    _, dest = safe_pending_destination(filename)
+    if dest is None or not dest.is_file():
+        raise HTTPException(status_code=404, detail="File not found in vault pending/")
+    raw = dest.read_bytes()
+    store = request.app.state.ingest_job_store
+    pd = originals_vault_mod.pending_dir()
+    if pd is None:
+        raise HTTPException(status_code=400, detail="Vault pending/ not available")
+    rel_pending = dest.relative_to(pd.resolve()).as_posix()
+    keep_rel = f"{originals_vault_mod.REL_PENDING}/{rel_pending}"
+    jid, err = await enqueue_raw_as_ingest_job(
+        store,
+        raw,
+        rel_pending,
+        remove_source_after=None,
+        keep_incoming_original_rel=keep_rel,
+    )
+    if err or not jid:
+        raise HTTPException(status_code=400, detail=err or "Could not enqueue ingest job")
+    return IngestJobEnqueueItem(job_id=jid, filename=rel_pending)
+
+
+_VAULT_SCAN_SUFFIXES = frozenset({".pdf", ".png", ".jpg", ".jpeg"})
+
+
+@app.post("/vault/incoming/scan", response_model=VaultIncomingScanResponse)
+async def vault_incoming_scan(request: Request) -> VaultIncomingScanResponse:
+    if not _request_may_configure_vault(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Scan allowed from localhost or ALLOW_REMOTE_VAULT_SETTINGS=true.",
+        )
+    if not originals_vault_mod.vault_enabled():
+        raise HTTPException(status_code=400, detail="Vault is not configured")
+    from app.vault_pathutil import enqueue_raw_as_ingest_job
+    from app.vault_watcher import move_incoming_file_to_pending
+
+    mode = resolve_vault_incoming_mode()
+    originals_vault_mod.ensure_vault_layout()
+    incoming = originals_vault_mod.incoming_dir()
+    pending = originals_vault_mod.pending_dir()
+    if incoming is None or pending is None:
+        raise HTTPException(status_code=400, detail="Vault directories not available")
+    store = request.app.state.ingest_job_store
+    enqueued = 0
+    moved_to_pending = 0
+    skipped = 0
+    errors: list[str] = []
+
+    incoming_r = incoming.resolve()
+    pending_r = pending.resolve()
+    for p in sorted(incoming_r.rglob("*")):
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        try:
+            rel = p.relative_to(incoming_r)
+        except ValueError:
+            continue
+        if any(part.startswith(".") for part in rel.parts):
+            skipped += 1
+            continue
+        suf = p.suffix.lower()
+        if suf not in _VAULT_SCAN_SUFFIXES:
+            skipped += 1
+            continue
+        if mode == "watch_review":
+            moved = move_incoming_file_to_pending(p, rel, incoming_r, pending_r)
+            if moved:
+                moved_to_pending += 1
+            else:
+                errors.append(f"Could not move to pending: {rel.as_posix()}")
+            continue
+        try:
+            raw = p.read_bytes()
+        except OSError as e:
+            errors.append(f"{rel.as_posix()}: {e}")
+            continue
+        incoming_rel = f"{originals_vault_mod.REL_INCOMING}/{rel.as_posix()}"
+        display_name = rel.as_posix()
+        jid, err = await enqueue_raw_as_ingest_job(
+            store,
+            raw,
+            display_name,
+            remove_source_after=None,
+            keep_incoming_original_rel=incoming_rel,
+        )
+        if err or not jid:
+            errors.append(f"{display_name}: {err or 'enqueue failed'}")
+        else:
+            enqueued += 1
+
+    return VaultIncomingScanResponse(
+        enqueued=enqueued,
+        moved_to_pending=moved_to_pending,
+        skipped=skipped,
+        errors=errors[:50],
+    )
+
+
+def _client_host_is_loopback(host: str | None) -> bool:
+    if not host:
+        return False
+    if host in ("127.0.0.1", "::1", "localhost", "testclient"):
+        return True
+    if host.startswith("127."):
+        return True
+    if host.startswith("::ffff:127."):
+        return True
+    return False
+
+
+def _request_may_reveal_local_files(request: Request) -> bool:
+    from app.config import ALLOW_LOCAL_FILE_REVEAL
+
+    if ALLOW_LOCAL_FILE_REVEAL:
+        return True
+    client = request.client
+    return _client_host_is_loopback(client.host if client else None)
+
+
+def _stored_original_file_exists(
+    effective_source: str | None, vault_rel: str | None
+) -> bool:
+    p = _path_from_document_source(effective_source)
+    if p is None and vault_rel:
+        p = originals_vault_mod.absolute_from_vault_relative(vault_rel)
+    return p is not None and p.is_file()
+
+
+def _path_from_document_source(raw: str | None) -> Path | None:
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if s.lower().startswith("file:"):
+        parsed = urlparse(s)
+        path_str = unquote(parsed.path or "")
+        if sys.platform == "win32" and len(path_str) >= 3 and path_str[0] == "/" and path_str[2] == ":":
+            path_str = path_str[1:]
+        p = Path(path_str)
+    else:
+        p = Path(s)
+    if not p.is_absolute():
+        return None
+    return p
+
+
+def _open_path_in_os(path: Path) -> None:
+    resolved = path.resolve()
+    s = str(resolved)
+    system = platform.system()
+    if system == "Darwin":
+        subprocess.Popen(["open", s], close_fds=True)
+    elif system == "Windows":
+        os.startfile(s)
+    else:
+        subprocess.Popen(["xdg-open", s], close_fds=True)
+
+
+def _resolve_document_original_file_path(conn: Any, doc_id: str) -> Path:
+    if not doc_exist(conn, doc_id):
+        raise HTTPException(status_code=404, detail="Document not found")
+    raw = get_document_source(conn, doc_id)
+    vault_rel = get_document_original_vault_path(conn, doc_id)
+    p = _path_from_document_source(raw)
+    if p is None and vault_rel:
+        p = originals_vault_mod.absolute_from_vault_relative(vault_rel)
+    if p is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Document has no usable absolute file path in source",
+        )
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {p}")
+    if not p.is_file():
+        raise HTTPException(status_code=400, detail="Source path is not a file")
+    return p
+
+
+@app.post("/documents/{doc_id}/reveal-source")
+def reveal_document_source(request: Request, doc_id: str):
+    """Open the file at the stored absolute path (localhost or ALLOW_LOCAL_FILE_REVEAL only)."""
+    if not _request_may_reveal_local_files(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Local file reveal is only allowed from localhost or when ALLOW_LOCAL_FILE_REVEAL=true",
+        )
+    with app_db_connection(request.app) as conn:
+        p = _resolve_document_original_file_path(conn, doc_id)
+    try:
+        _open_path_in_os(p)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return Response(status_code=204)
+
+
+@app.get("/documents/{doc_id}/original")
+def serve_document_original(request: Request, doc_id: str):
+    """Stream the original file (localhost or ALLOW_LOCAL_FILE_REVEAL only)."""
+    if not _request_may_reveal_local_files(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Local file reveal is only allowed from localhost or when ALLOW_LOCAL_FILE_REVEAL=true",
+        )
+    with app_db_connection(request.app) as conn:
+        p = _resolve_document_original_file_path(conn, doc_id)
+    mime_guess, _ = mimetypes.guess_type(p.name)
+    media_type = mime_guess or "application/octet-stream"
+    return FileResponse(path=str(p.resolve()), filename=p.name, media_type=media_type)
 
 
 @app.patch("/documents/{doc_id}", response_model=DocumentSummary)
 def patch_document(request: Request, doc_id: str, body: DocumentUpdateRequest):
     """Update document tags and/or linked account. Omit a field to leave it unchanged."""
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         if not doc_exist(conn, doc_id):
             raise HTTPException(status_code=404, detail="Document not found")
         if "tags" in body.model_fields_set:
             set_document_tags(conn, doc_id, body.tags if body.tags is not None else [])
         if "account_id" in body.model_fields_set:
             set_document_linked_account(conn, doc_id, body.account_id)
+        if "source" in body.model_fields_set:
+            src = body.source
+            if src is not None:
+                src = _strip_nul_bytes(src)
+                if src.strip() == "":
+                    src = None
+            update_document_source(conn, doc_id, src)
         conn.commit()
         rows = list_documents(conn)
         for r in rows:
             if r[0] == doc_id:
-                return DocumentSummary(
-                    doc_id=r[0],
-                    title=r[1],
-                    source=r[2],
-                    created_at=r[3],
-                    num_chunks=r[4],
-                    snippet=r[5],
-                    tags=r[6] if len(r) > 6 else [],
-                    linked_account_ids=r[7] if len(r) > 7 else [],
-                )
+                return _document_summary_from_row(r)
     raise HTTPException(status_code=404, detail="Document not found")
 
 
-def _build_data_summary(conn: sqlite3.Connection, max_chars: int = 2000) -> str:
+@app.delete("/documents/{doc_id}", status_code=204)
+def delete_document_route(request: Request, doc_id: str):
+    """Delete document and cascade-remove linked positions and obligations."""
+    with app_db_connection(request.app) as conn:
+        if not doc_exist(conn, doc_id):
+            raise HTTPException(status_code=404, detail="Document not found")
+        delete_document_cascade(conn, doc_id)
+        conn.commit()
+    return None
+
+
+def _build_data_summary(conn: Any, max_chars: int = 2000) -> str:
     """Build a short text summary of accounts, positions, obligations for Ask (data) context."""
     parts = []
     for row in list_accounts(conn):
@@ -978,7 +2063,7 @@ def _build_data_summary(conn: sqlite3.Connection, max_chars: int = 2000) -> str:
     return s[:max_chars] + ("..." if len(s) > max_chars else "")
 
 
-def _build_decision_sources(conn: sqlite3.Connection, trigger_rows: list[tuple]) -> list[UserDataSource | WebSource]:
+def _build_decision_sources(conn: Any, trigger_rows: list[tuple]) -> list[UserDataSource | WebSource]:
     """Build sources list: user data refs for entities in triggers, plus optional web refs added by caller."""
     sources: list[UserDataSource | WebSource] = []
     seen: set[tuple[str, str]] = set()
@@ -1018,7 +2103,7 @@ async def get_decision(request: Request):
     """
     import uuid
     logger.info("Decision: start")
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         triggers = evaluate_triggers(conn, persist=True)
         now_ts = int(time.time())
         logger.info("Decision: triggers evaluated count=%d", len(triggers))
@@ -1065,12 +2150,15 @@ async def get_decision(request: Request):
             rate_str = f"{rate_apr}%" if rate_apr is not None else "unknown rate"
             prompt = (
                 f"What should someone do if they have {principal_str} in a CD maturing now? "
-                f"Current rate was {rate_str}. Give 2-3 short options."
+                f"Current rate was {rate_str}. "
+                "Give exactly 2-3 short options, one per line, starting each line with '1.', '2.', etc. "
+                "No intro paragraph. Max ~20 words per option."
             )
             try:
                 advice = await llm_client.answer_openai(prompt)
                 if advice:
-                    openai_advice.append(advice)
+                    for chunk in split_advice_bullets(advice):
+                        openai_advice.append(chunk)
             except Exception as e:
                 logger.warning("OpenAI advice for maturity trigger failed: %s", e)
 
@@ -1111,7 +2199,7 @@ async def get_decision(request: Request):
 @app.get("/decision/history", response_model=list[DecisionHistoryItem])
 def get_decision_history(request: Request, since: int | None = None, limit: int = 50):
     """List past decision results (evaluated_at, status, memo) for the Past advice view."""
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         rows = list_decision_history(conn, since=since, limit=limit)
         return [
             DecisionHistoryItem(id=r[0], evaluated_at=r[1], status=r[2], memo=r[3], trigger_ids=r[4])
@@ -1119,11 +2207,120 @@ def get_decision_history(request: Request, since: int | None = None, limit: int 
         ]
 
 
+@app.get("/dashboard", response_model=DashboardResponse)
+def get_dashboard(request: Request, days: int = 365):
+    """Deterministic maturity and obligation summary for the Home view."""
+    days = max(1, min(days, 3650))
+    with app_db_connection(request.app) as conn:
+        data = build_dashboard(conn, days=days)
+        return DashboardResponse(**data)
+
+
+@app.post("/positions/confirm-extraction", response_model=ConfirmExtractionResponse)
+def confirm_extraction(request: Request, body: ConfirmExtractionRequest):
+    """Accept or dismiss a structured position suggestion from document ingest."""
+    with app_db_connection(request.app) as conn:
+        if not doc_exist(conn, body.document_id):
+            raise HTTPException(status_code=404, detail="Document not found")
+        if not body.accept:
+            clear_document_extracted_position(conn, body.document_id)
+            conn.commit()
+            return ConfirmExtractionResponse(accepted=False, message="Suggestion dismissed.")
+        position = apply_position_extraction(
+            conn, body.document_id, overrides=body.overrides
+        )
+        if position is None:
+            raise HTTPException(status_code=404, detail="No pending extraction for this document")
+        conn.commit()
+        return ConfirmExtractionResponse(
+            accepted=True,
+            account_id=position.account_id,
+            position=position,
+            message="Position added.",
+        )
+
+
+@app.post("/obligations/confirm-extraction", response_model=ConfirmObligationExtractionResponse)
+def confirm_obligation_extraction(request: Request, body: ConfirmObligationExtractionRequest):
+    """Accept or dismiss a structured obligation suggestion from document ingest."""
+    with app_db_connection(request.app) as conn:
+        if not doc_exist(conn, body.document_id):
+            raise HTTPException(status_code=404, detail="Document not found")
+        if not body.accept:
+            clear_document_extracted_obligation(conn, body.document_id)
+            conn.commit()
+            return ConfirmObligationExtractionResponse(accepted=False, message="Suggestion dismissed.")
+        obligation = apply_obligation_extraction(
+            conn, body.document_id, overrides=body.overrides
+        )
+        if obligation is None:
+            raise HTTPException(
+                status_code=404, detail="No pending obligation extraction for this document"
+            )
+        conn.commit()
+        return ConfirmObligationExtractionResponse(
+            accepted=True,
+            obligation=obligation,
+            message="Obligation added.",
+        )
+
+
+@app.post("/positions/{position_id}/resolve", response_model=PositionResponse)
+def resolve_position_route(request: Request, position_id: str, body: ResolvePositionRequest):
+    with app_db_connection(request.app) as conn:
+        row = get_position(conn, position_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Position not found")
+        now = int(time.time())
+        if body.action == "renewed":
+            if not body.new_maturity_date or not str(body.new_maturity_date).strip():
+                raise HTTPException(status_code=400, detail="new_maturity_date is required when renewing")
+            resolve_position(conn, position_id, now, body.new_maturity_date.strip()[:10])
+        else:
+            resolve_position(conn, position_id, now, None)
+        conn.commit()
+        row = get_position(conn, position_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Position not found")
+        return PositionResponse(
+            id=row[0],
+            account_id=row[1],
+            asset_type=row[2],
+            description=row[3],
+            principal=row[4],
+            rate_apr=row[5],
+            maturity_date=row[6],
+            document_id=row[7],
+            created_at=row[8],
+            updated_at=row[9],
+        )
+
+
+@app.post("/obligations/{obligation_id}/resolve", response_model=ObligationResponse)
+def resolve_obligation_route(request: Request, obligation_id: str, body: ResolveObligationRequest):
+    with app_db_connection(request.app) as conn:
+        row = get_obligation(conn, obligation_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Obligation not found")
+        now = int(time.time())
+        resolve_obligation(conn, obligation_id, now)
+        conn.commit()
+        return ObligationResponse(
+            id=row[0],
+            description=row[1],
+            due_date=row[2],
+            amount_estimate=row[3],
+            priority=row[4],
+            document_id=row[5],
+            created_at=row[6],
+        )
+
+
 # --- Financial CRUD ---
 
 @app.get("/accounts", response_model=list[AccountResponse])
 def list_accounts_route(request: Request):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         rows = list_accounts(conn)
         return [AccountResponse(id=r[0], name=r[1], type=r[2], institution=r[3], document_id=r[4], created_at=r[5]) for r in rows]
 
@@ -1133,7 +2330,7 @@ def create_account(request: Request, body: AccountCreate):
     import uuid
     acc_id = str(uuid.uuid4())
     now = int(time.time())
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         insert_account(conn, acc_id, body.name, now, body.type, body.institution, body.document_id)
         conn.commit()
     return AccountResponse(id=acc_id, name=body.name, type=body.type, institution=body.institution, document_id=body.document_id, created_at=now)
@@ -1141,7 +2338,7 @@ def create_account(request: Request, body: AccountCreate):
 
 @app.get("/accounts/{account_id}", response_model=AccountResponse)
 def get_account_route(request: Request, account_id: str):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         row = get_account(conn, account_id)
         if not row:
             raise HTTPException(status_code=404, detail="Account not found")
@@ -1150,7 +2347,7 @@ def get_account_route(request: Request, account_id: str):
 
 @app.patch("/accounts/{account_id}", response_model=AccountResponse)
 def patch_account(request: Request, account_id: str, body: AccountUpdate):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         row = get_account(conn, account_id)
         if not row:
             raise HTTPException(status_code=404, detail="Account not found")
@@ -1162,7 +2359,7 @@ def patch_account(request: Request, account_id: str, body: AccountUpdate):
 
 @app.delete("/accounts/{account_id}", status_code=204)
 def delete_account_route(request: Request, account_id: str):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         if not get_account(conn, account_id):
             raise HTTPException(status_code=404, detail="Account not found")
         delete_account(conn, account_id)
@@ -1172,7 +2369,7 @@ def delete_account_route(request: Request, account_id: str):
 
 @app.get("/positions", response_model=list[PositionResponse])
 def list_positions_route(request: Request, account_id: str | None = None):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         rows = list_positions(conn, account_id)
         return [
             PositionResponse(id=r[0], account_id=r[1], asset_type=r[2], description=r[3], principal=r[4], rate_apr=r[5], maturity_date=r[6], document_id=r[7], created_at=r[8], updated_at=r[9])
@@ -1185,7 +2382,7 @@ def create_position(request: Request, body: PositionCreate):
     import uuid
     pos_id = str(uuid.uuid4())
     now = int(time.time())
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         if not get_account(conn, body.account_id):
             raise HTTPException(status_code=400, detail="Account not found")
         insert_position(conn, pos_id, body.account_id, body.asset_type, now, now, body.description, body.principal, body.rate_apr, body.maturity_date, body.document_id)
@@ -1195,7 +2392,7 @@ def create_position(request: Request, body: PositionCreate):
 
 @app.get("/positions/{position_id}", response_model=PositionResponse)
 def get_position_route(request: Request, position_id: str):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         row = get_position(conn, position_id)
         if not row:
             raise HTTPException(status_code=404, detail="Position not found")
@@ -1205,7 +2402,7 @@ def get_position_route(request: Request, position_id: str):
 @app.patch("/positions/{position_id}", response_model=PositionResponse)
 def patch_position(request: Request, position_id: str, body: PositionUpdate):
     now = int(time.time())
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         row = get_position(conn, position_id)
         if not row:
             raise HTTPException(status_code=404, detail="Position not found")
@@ -1217,7 +2414,7 @@ def patch_position(request: Request, position_id: str, body: PositionUpdate):
 
 @app.delete("/positions/{position_id}", status_code=204)
 def delete_position_route(request: Request, position_id: str):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         if not get_position(conn, position_id):
             raise HTTPException(status_code=404, detail="Position not found")
         delete_position(conn, position_id)
@@ -1227,7 +2424,7 @@ def delete_position_route(request: Request, position_id: str):
 
 @app.get("/obligations", response_model=list[ObligationResponse])
 def list_obligations_route(request: Request):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         rows = list_obligations(conn)
         return [
             ObligationResponse(id=r[0], description=r[1], due_date=r[2], amount_estimate=r[3], priority=r[4], document_id=r[5], created_at=r[6])
@@ -1240,7 +2437,7 @@ def create_obligation(request: Request, body: ObligationCreate):
     import uuid
     obl_id = str(uuid.uuid4())
     now = int(time.time())
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         insert_obligation(conn, obl_id, body.description, body.due_date, now, body.amount_estimate, body.priority, body.document_id)
         conn.commit()
     return ObligationResponse(id=obl_id, description=body.description, due_date=body.due_date, amount_estimate=body.amount_estimate, priority=body.priority, document_id=body.document_id, created_at=now)
@@ -1248,7 +2445,7 @@ def create_obligation(request: Request, body: ObligationCreate):
 
 @app.get("/obligations/{obligation_id}", response_model=ObligationResponse)
 def get_obligation_route(request: Request, obligation_id: str):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         row = get_obligation(conn, obligation_id)
         if not row:
             raise HTTPException(status_code=404, detail="Obligation not found")
@@ -1257,7 +2454,7 @@ def get_obligation_route(request: Request, obligation_id: str):
 
 @app.patch("/obligations/{obligation_id}", response_model=ObligationResponse)
 def patch_obligation(request: Request, obligation_id: str, body: ObligationUpdate):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         row = get_obligation(conn, obligation_id)
         if not row:
             raise HTTPException(status_code=404, detail="Obligation not found")
@@ -1269,7 +2466,7 @@ def patch_obligation(request: Request, obligation_id: str, body: ObligationUpdat
 
 @app.delete("/obligations/{obligation_id}", status_code=204)
 def delete_obligation_route(request: Request, obligation_id: str):
-    with sqlite3.connect(request.app.state.db_path) as conn:
+    with app_db_connection(request.app) as conn:
         if not get_obligation(conn, obligation_id):
             raise HTTPException(status_code=404, detail="Obligation not found")
         delete_obligation(conn, obligation_id)
@@ -1279,7 +2476,79 @@ def delete_obligation_route(request: Request, obligation_id: str):
 
 @app.get("/health")
 def health():
-    return {"healthy": True}
+    ask_mode = "queued" if _is_portable_profile() else "stream"
+    return {"healthy": True, "ask_mode": ask_mode, "profile": _portable_profile() or "default"}
+
+
+@app.post("/warmup/ask", response_model=WarmupResponse)
+async def warmup_ask():
+    result = await request_warmup("ask")
+    return WarmupResponse(**result)
+
+
+@app.post("/warmup/ingest", response_model=WarmupResponse)
+async def warmup_ingest():
+    result = await request_warmup("ingest")
+    return WarmupResponse(**result)
+
+
+@app.get("/warmup/status", response_model=WarmupStatusResponse)
+def warmup_status():
+    return WarmupStatusResponse(**get_warmup_status())
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_envelope(exc.detail, http_error_code(exc.status_code), request=request),
+    )
+
+
+@app.exception_handler(httpx.ConnectError)
+async def httpx_connect_error_handler(request: Request, exc: httpx.ConnectError):
+    _remote_log_error(request, f"Upstream connect failed: {str(exc)[:500]}", "httpx.ConnectError")
+    logger.warning("Upstream connection failed: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content=error_envelope(
+            (
+                "Cannot reach the AI backend or another upstream service. It may still be starting "
+                "or offline. Ask the administrator to check Ledgerly logs or Docker/Ollama."
+            ),
+            "upstream_connect",
+            request=request,
+        ),
+    )
+
+
+@app.exception_handler(httpx.TimeoutException)
+async def httpx_timeout_exception_handler(request: Request, exc: httpx.TimeoutException):
+    """Covers ConnectTimeout, ReadTimeout, PoolTimeout, WriteTimeout, etc."""
+    _remote_log_error(request, f"{type(exc).__name__}: {str(exc)[:500]}", type(exc).__name__)
+    logger.warning("Upstream HTTP timeout (%s): %s", type(exc).__name__, exc)
+    if isinstance(exc, httpx.ConnectTimeout):
+        detail = (
+            "Timed out connecting to the AI backend or another upstream service. "
+            "If this persists, the administrator should verify Ollama and network/Docker routing."
+        )
+        code = "upstream_connect"
+    elif isinstance(exc, httpx.ReadTimeout):
+        detail = (
+            "The AI backend took too long to reply. Wait and try again, or ask "
+            "the administrator to check model load or increase timeouts."
+        )
+        code = "llm_timeout"
+    else:
+        detail = (
+            "A network request to the AI backend or another upstream service timed out. "
+            "Wait and retry, or ask the administrator to check service load."
+        )
+        code = "llm_timeout"
+    return JSONResponse(
+        status_code=504,
+        content=error_envelope(detail, code, request=request),
+    )
 
 
 @app.exception_handler(LLMTimeoutError)
@@ -1287,7 +2556,11 @@ async def llm_timeout_handler(request: Request, exc: LLMTimeoutError):
     _remote_log_error(request, "LLM request timed out", "LLMTimeoutError")
     return JSONResponse(
         status_code=504,
-        content={"detail": "LLM request timed out"},
+        content=error_envelope(
+            "The AI backend timed out. Wait and retry, or ask the administrator for help.",
+            "llm_timeout",
+            request=request,
+        ),
     )
 
 
@@ -1296,16 +2569,24 @@ async def llm_upstream_timeout_handler(request: Request, exc: LLMUpstreamTimeout
     _remote_log_error(request, "LLM upstream timed out", "LLMUpstreamTimeoutError")
     return JSONResponse(
         status_code=504,
-        content={"detail": "LLM request timed out"},
+        content=error_envelope(
+            (
+                "The embedding or AI backend timed out. Wait and retry with a smaller payload, "
+                "or ask the administrator to check timeouts and service load."
+            ),
+            "llm_timeout",
+            request=request,
+        ),
     )
 
 
 @app.exception_handler(LLMServiceError)
 async def llm_service_error_handler(request: Request, exc: LLMServiceError):
     _remote_log_error(request, "LLM service unavailable", "LLMServiceError")
+    detail = str(exc).strip() or "LLM service unavailable"
     return JSONResponse(
         status_code=503,
-        content={"detail": "LLM service unavailable"},
+        content=error_envelope(detail, "llm_service", request=request),
     )
 
 
@@ -1314,28 +2595,32 @@ async def llm_rate_limit_handler(request: Request, exc: LLMRateLimitedError):
     _remote_log_error(request, "LLM rate limit", "LLMRateLimitedError")
     return JSONResponse(
         status_code=429,
-        content={"detail": "LLM rate limit issue."},
+        content=error_envelope(
+            "Too many assistant requests too quickly. Wait briefly and try again.",
+            "rate_limit",
+            request=request,
+        ),
     )
 
 
 @app.exception_handler(Exception)
 async def catch_all_exception_handler(request: Request, exc: Exception):
-    if isinstance(exc, HTTPException) and exc.status_code < 500:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     _remote_log_error(
         request,
         f"{type(exc).__name__}: {str(exc)[:500]}",
         type(exc).__name__,
     )
-    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
-        logger.warning("Ollama connection failed: %s", exc)
-    elif isinstance(exc, LLMServiceError) and "connection failed" in str(exc).lower():
-        logger.warning("Ollama connection failed: %s", exc)
-    else:
-        logger.exception("Unhandled exception")
+    logger.exception("Unhandled exception")
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content=error_envelope(
+            (
+                "An unexpected error occurred. Try again later. "
+                "If it persists, send the administrator the Reference ID shown here."
+            ),
+            "internal_error",
+            request=request,
+        ),
     )
 
 

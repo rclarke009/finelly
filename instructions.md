@@ -1,12 +1,12 @@
-# Verbiage — User instructions
+# Ledgerly — User instructions
 
-This guide explains what to enter in each part of Verbiage and where you can find that information. No financial jargon is assumed.
+This guide explains what to enter in each part of Ledgerly and where you can find that information. No financial jargon is assumed.
 
 ---
 
-## What Verbiage does
+## What Ledgerly does
 
-Verbiage helps you keep track of **safe, income-earning assets** (like CDs and money-market accounts) and **upcoming bills or obligations**. You enter your accounts and holdings once; Verbiage can then remind you when something is maturing or when a payment is due, and you can ask questions about your data and your uploaded documents.
+Ledgerly helps you keep track of **safe, income-earning assets** (like CDs and money-market accounts) and **upcoming bills or obligations**. You enter your accounts and holdings once; Ledgerly can then remind you when something is maturing or when a payment is due, and you can ask questions about your data and your uploaded documents.
 
 ---
 
@@ -20,7 +20,7 @@ Verbiage helps you keep track of **safe, income-earning assets** (like CDs and m
 | **APR** | Annual Percentage Rate—the yearly interest rate (e.g. 4.5 means 4.5% per year). |
 | **Maturity date** | The date when a CD or similar product “matures”—i.e. you can withdraw the money without penalty or renew it. |
 | **Obligation** | Something you owe or must pay by a certain date (e.g. property tax, insurance premium, loan payment). |
-| **Ingest** | Uploading or pasting document text into Verbiage so you can search and ask questions about it later. |
+| **Ingest** | Uploading or pasting document text into Ledgerly so you can search and ask questions about it later. |
 | **Doc ID / Document ID** | An optional label you give to a document or link to a record (e.g. `statement-jan-2024`). Used to tie documents to accounts or positions. |
 
 ---
@@ -51,7 +51,7 @@ Use this to **ask questions** about your ingested documents and your accounts, p
 
 | Field | What it means | Example | Where you find it |
 |-------|----------------|--------|-------------------|
-| **Question *** | What you want to know. | `What’s my total in CDs?`, `When does my biggest CD mature?`, `Summarize the key points of my last statement.` | You type any question; Verbiage uses your data and documents to answer. |
+| **Question *** | What you want to know. | `What’s my total in CDs?`, `When does my biggest CD mature?`, `Summarize the key points of my last statement.` | You type any question; Ledgerly uses your data and documents to answer. |
 | **Limit to document** (optional) | Restrict the answer to one document. | Pick “January 2024 statement” from the list. | Dropdown is filled from documents you’ve ingested. Leave “All documents” to search everything. |
 | **Top K chunks** | How many text snippets to use when answering. | Default 5 is usually enough. | Leave as 5 unless you want more or fewer sources. |
 
@@ -99,7 +99,7 @@ A **position** is one specific holding inside an account (e.g. one CD, one money
 
 ### Data → Obligations
 
-**Obligations** are things you must pay by a certain date (bills, taxes, premiums, loan payments). Verbiage can remind you when they’re due.
+**Obligations** are things you must pay by a certain date (bills, taxes, premiums, loan payments). Ledgerly can remind you when they’re due.
 
 | Field | What it means | Example | Where you find it |
 |-------|----------------|--------|-------------------|
@@ -115,7 +115,7 @@ A **position** is one specific holding inside an account (e.g. one CD, one money
 
 ### Status (Decision status)
 
-Click **Check status** to get **current advice** based on your accounts, positions, and obligations. Verbiage looks for things like:
+Click **Check status** to get **current advice** based on your accounts, positions, and obligations. Ledgerly looks for things like:
 
 - CDs or similar products **maturing soon**
 - **Obligations due** in the near future

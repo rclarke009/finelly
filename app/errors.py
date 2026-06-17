@@ -1,13 +1,17 @@
+"""LLM and upstream error types."""
 
 
 class LLMServiceError(Exception):
-    """LLM or embedding API returned an error (4xx/5xx)."""
+    """Ollama or OpenAI returned an error response."""
 
-class LLMTimeoutError(Exception):
-    """LLM request timed out."""
 
 class LLMRateLimitedError(Exception):
-    """API returned 429 rate limit."""
+    """Local token bucket rate limit exceeded."""
 
-class LLMUpstreamTimeoutError(Exception):
-    """Embedding request timed out."""
+
+class LLMTimeoutError(Exception):
+    """LLM request timed out (generic)."""
+
+
+class LLMUpstreamTimeoutError(LLMTimeoutError):
+    """Upstream LLM read/connect timeout."""

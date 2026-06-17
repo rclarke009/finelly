@@ -1,135 +1,121 @@
-# Part C — Embeddings (chunk → vector)
-# Real embedding API (best, if you have it)
-# Implement embeddings_client.py:
-# async def embed_texts(texts: list[str]) -> list[list[float]]
-# Use env vars:
-# EMBED_BASE_URL
-# EMBED_API_KEY
-# EMBED_MODEL
-# Add timeout, retries (reuse Phase 2 patterns)
-# In-memory cache (TTLCache): same text + model → same vector; avoids duplicate Ollama calls.
+"""Ollama embedding HTTP client."""
+
+from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
-from cachetools import TTLCache
 
 from app.config import (
     EMBED_BASE_URL,
+    EMBED_BATCH_SIZE,
+    EMBED_INTER_BATCH_SLEEP_SEC,
     EMBED_MAX_ATTEMPTS,
     EMBED_MODEL,
     EMBED_TIMEOUT,
 )
-from app.errors import (
-    LLMRateLimitedError,
-    LLMServiceError,
-    LLMUpstreamTimeoutError,
-)
+from app.ask_trace import log_ask_event
+from app.ollama_guard import ollama_guard
 
 logger = logging.getLogger(__name__)
 
-# Per-text cache: key (model, text) → list[float]. TTL 1 hour; max 10k entries.
-_EMBED_CACHE_TTL = 3600
-_EMBED_CACHE_MAXSIZE = 10_000
-_embed_cache: TTLCache[tuple[str, str], list[float]] = TTLCache(
-    maxsize=_EMBED_CACHE_MAXSIZE,
-    ttl=_EMBED_CACHE_TTL,
-)
-_embed_cache_lock = asyncio.Lock()
+_embed_cache: dict[tuple[str, str], list[float]] = {}
+
+OnBatchComplete = Callable[[int, int], Awaitable[None] | None] | None
 
 
-def _parse_embed_response(data: dict) -> list[list[float]]:
-    """Parse Ollama embed response into list of vectors, same order as input."""
-    if data.get("embeddings"):
-        return data["embeddings"]
-    if data.get("embedding") is not None:
-        return [data["embedding"]]
-    raise LLMServiceError("Unexpected embed response shape")
+async def embed_text(text: str, *, model: str | None = None) -> list[float]:
+    m = model or EMBED_MODEL
+    key = (m, text)
+    if key in _embed_cache:
+        return _embed_cache[key]
+    t0 = time.perf_counter()
+    vec = (await _embed_many_once([text], model=m))[0]
+    log_ask_event("embed_query", duration_ms=int((time.perf_counter() - t0) * 1000), dim=len(vec))
+    _embed_cache[key] = vec
+    return vec
 
 
-async def _call_embed_api(texts: list[str]) -> list[list[float]]:
-    """
-    Call Ollama embed API for the given texts. Retries on rate limit / timeout.
-    Returns one vector per text, same order.
-    """
-    last_exc: BaseException | None = None
-    for attempt in range(EMBED_MAX_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
-                response = await client.post(
-                    f"{EMBED_BASE_URL}/api/embed",
-                    headers={"Content-Type": "application/json"},
-                    json={"model": EMBED_MODEL, "input": texts},
-                )
-            if response.status_code == 429:
-                raise LLMRateLimitedError("Embedding API rate limited")
-            if response.status_code >= 400:
-                raise LLMServiceError(
-                    f"Embedding API error {response.status_code}: {response.text[:200]}"
-                )
-            data = response.json()
-            return _parse_embed_response(data)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            raise LLMServiceError(f"Ollama (embed) connection failed: {e}") from e
-        except httpx.TimeoutException:
-            last_exc = LLMUpstreamTimeoutError("Embedding request timed out")
-            if attempt < EMBED_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise last_exc
-            continue
-        except (LLMRateLimitedError, LLMUpstreamTimeoutError) as e:
-            last_exc = e
-            if attempt < EMBED_MAX_ATTEMPTS - 1:
-                delay = 1.0 * (2**attempt)
-                jitter = random.uniform(0, delay * 0.5)
-                await asyncio.sleep(delay + jitter)
-            else:
-                raise
-            continue
-        except LLMServiceError:
-            raise
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Embedding retries exhausted")
-
-
-async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """
-    Embed a list of texts. Returns one vector per text, same order.
-    Uses an in-memory TTLCache so identical (model, text) pairs skip the API.
-    Only texts missing from the cache are sent to Ollama in one batched request.
-    """
+async def embed_batch(
+    texts: list[str],
+    *,
+    model: str | None = None,
+    on_batch_complete: OnBatchComplete = None,
+) -> list[list[float]]:
     if not texts:
         return []
+    m = model or EMBED_MODEL
+    batch_size = len(texts) if EMBED_BATCH_SIZE <= 0 else EMBED_BATCH_SIZE
+    total_batches = max(1, (len(texts) + batch_size - 1) // batch_size)
+    out: list[list[float]] = []
 
+    for batch_num, start in enumerate(range(0, len(texts), batch_size), start=1):
+        batch = texts[start : start + batch_size]
+        out.extend(await _embed_batch_with_cache(batch, model=m))
+        if on_batch_complete is not None:
+            maybe = on_batch_complete(batch_num, total_batches)
+            if asyncio.iscoroutine(maybe):
+                await maybe
+        if EMBED_INTER_BATCH_SLEEP_SEC > 0 and batch_num < total_batches:
+            await asyncio.sleep(EMBED_INTER_BATCH_SLEEP_SEC)
+
+    log_ask_event("embed_batch", count=len(texts), batches=total_batches)
+    return out
+
+
+async def _embed_batch_with_cache(texts: list[str], *, model: str) -> list[list[float]]:
     results: list[list[float] | None] = [None] * len(texts)
-    need_fetch: list[tuple[int, str]] = []
-
-    async with _embed_cache_lock:
-        for i, text in enumerate(texts):
-            key = (EMBED_MODEL, text)
-            if key in _embed_cache:
-                results[i] = _embed_cache[key]
-            else:
-                need_fetch.append((i, text))
-
-    if not need_fetch:
-        return list(results)
-
-    texts_to_fetch = [t for _, t in need_fetch]
-    vectors = await _call_embed_api(texts_to_fetch)
-
-    async with _embed_cache_lock:
-        for (idx, text), vec in zip(need_fetch, vectors):
-            results[idx] = vec
-            _embed_cache[(EMBED_MODEL, text)] = vec
-
-    return list(results)
+    to_fetch: list[tuple[int, str]] = []
+    for i, text in enumerate(texts):
+        key = (model, text)
+        if key in _embed_cache:
+            results[i] = _embed_cache[key]
+        else:
+            to_fetch.append((i, text))
+    if to_fetch:
+        fetch_texts = [text for _, text in to_fetch]
+        vecs = await _embed_many_once(fetch_texts, model=model)
+        for (i, text), vec in zip(to_fetch, vecs, strict=True):
+            results[i] = vec
+            _embed_cache[(model, text)] = vec
+    return [vec for vec in results if vec is not None]
 
 
+async def _embed_many_once(texts: list[str], *, model: str) -> list[list[float]]:
+    if not texts:
+        return []
+    url = f"{EMBED_BASE_URL.rstrip('/')}/api/embed"
+    payload: dict[str, Any] = {"model": model, "input": texts if len(texts) > 1 else texts[0]}
+    last_err: Exception | None = None
+    for attempt in range(EMBED_MAX_ATTEMPTS):
+        try:
+            async with ollama_guard.acquire():
+                async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+            return _parse_embed_response(data, expected=len(texts))
+        except Exception as e:
+            last_err = e
+            if attempt + 1 < EMBED_MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * (2**attempt))
+    raise last_err or RuntimeError("embed failed")
 
+
+def _parse_embed_response(data: dict[str, Any], *, expected: int) -> list[list[float]]:
+    embeddings = data.get("embeddings")
+    if isinstance(embeddings, list) and embeddings:
+        if isinstance(embeddings[0], list):
+            return [[float(x) for x in row] for row in embeddings]
+        if expected == 1:
+            return [[float(x) for x in embeddings]]
+    single = data.get("embedding")
+    if isinstance(single, list):
+        if single and isinstance(single[0], list):
+            return [[float(x) for x in row] for row in single]
+        return [[float(x) for x in single]]
+    raise RuntimeError("Unexpected embed response shape")

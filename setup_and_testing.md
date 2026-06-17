@@ -1,10 +1,10 @@
-# Verbiage — Setup and Testing
+# Ledgerly — Setup and Testing
 
 ## Prerequisites: Ollama (LLM and embeddings)
 
 The app uses **Ollama** for both the LLM (answer generation) and embeddings. Default config expects:
 
-- **LLM:** `qwen3.5:9b` at `http://localhost:11434`
+- **LLM:** `qwen3:8b` at `http://localhost:11434`
 - **Embeddings:** `nomic-embed-text` at the same base URL
 
 ### Start Ollama and pull models
@@ -18,19 +18,33 @@ In another terminal, pull the models so the API can load them:
 
 ```bash
 # LLM used by POST /ask (see app/config.py: LLM_MODEL)
-ollama pull qwen3.5:9b
+ollama pull qwen3:8b
 
 # Embedding model used for ingest and ask (EMBED_MODEL)
 ollama pull nomic-embed-text
 
-# Vision model for POST /ask/image and POST /ingest/image (images → text; see app/config.py: LLAVA_MODEL)
-ollama pull qwen2.5vl:7b
+# Vision for POST /ask/image, POST /ingest/image, and PDF vision fallback (LLAVA_MODEL)
+ollama pull llava:7b
 ```
+
+Large PDF ingests use batched calls to Ollama (`EMBED_BATCH_SIZE`, default 32) with `EMBED_TIMEOUT` (default 120s) per batch—tune in `.env` if you still see timeouts or want smaller requests.
+
+**Queued multi-file ingest:** Upload multiple PDFs/images in one go via **POST /ingest/jobs** (the Ingest UI uses this when you select more than one file). Jobs run **one at a time** in the background; tune `INGEST_QUEUE_INTER_JOB_SLEEP_SEC` and `EMBED_INTER_BATCH_SLEEP_SEC` in `.env`. Poll **GET /ingest/jobs** (the UI refreshes about every **60s** per `INGEST_UI_POLL_INTERVAL_SEC`). The in-memory queue does **not** survive a server restart.
+
+### Vision, OCR, and memory (what users do vs what admins configure)
+
+**Normal use (no special steps):** For scanned or screenshot PDFs, prefer **Auto** or **OCR** in the Ingest UI (`pdf_text_mode`). Auto tries embedded text first, then **Tesseract OCR** when the PDF looks image-like; for smaller PDFs it may fall back to the vision model per page (capped by `PDF_VISION_MAX_PAGES`). OCR avoids calling the vision model on every page, which is slower and harder on GPU RAM. You do **not** need to close apps or “free memory” for routine ingest.
+
+**One-time setup:** Whoever installs Ledgerly should set **`LLAVA_MODEL`** in `.env` to a vision model that actually runs on this machine (default `llava:7b`; see `.env.example`). On a machine with plenty of RAM, you can switch to a larger model (e.g. `qwen2.5vl:7b`) after `ollama pull`. If Ollama still reports insufficient memory, use a **smaller** vision model from the Ollama library.
+
+**Portable / low-spec profile:** Set **`LEDGERLY_PROFILE=portable`** or **`LEDGERLY_PROFILE=low_spec`** in `.env` (legacy: **`FINELLY_PROFILE`**) and **omit `LLAVA_MODEL`** (or leave it commented) to use the built-in smaller default (`moondream`). Run `ollama pull moondream` once. If you explicitly set `LLAVA_MODEL`, that value always wins.
+
+**Troubleshooting only (admins):** If ingest still fails with Ollama errors about **system memory** or **VRAM**, check that Tesseract OCR is installed so PDFs can use OCR instead of vision; confirm `ollama pull` succeeded for `LLAVA_MODEL`; try a smaller vision model; optionally check `ollama ps` to see which models are loaded. Reducing concurrent heavy GPU use is a last resort, not a daily user workflow.
 
 Optional: run the LLM interactively (also pulls if needed):
 
 ```bash
-ollama run qwen3.5:9b
+ollama run qwen3:8b
 ```
 
 ---
@@ -38,13 +52,30 @@ ollama run qwen3.5:9b
 ## App setup
 
 ```bash
-cd verbiage
+cd Ledgerly
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and adjust if needed (e.g. `DATABASE_PATH`, `LLM_BASE_URL`). Defaults work for local Ollama. For Supabase/Postgres, set `DATABASE_URL` to the Postgres connection URI (Project Settings → Database → Connection string; see `supabase_migration.md`).
+Copy `.env.example` to `.env` and adjust if needed (e.g. `DATABASE_PATH`, `LLM_BASE_URL`). Defaults work for local Ollama.
+
+### Postgres + pgvector (Supabase or local)
+
+Set `DATABASE_URL` to the Postgres URI (Project Settings → Database → Connection string; see `supabase_migration.md`). When set, the app uses **Postgres for all API data** and **pgvector** for `/ask` retrieval (no 5k embedding cap; index-backed `ORDER BY embedding <=> query`). Apply Supabase SQL migrations under `supabase/migrations/` in order (phase1 schema, financial tables, then `20250320000000_schema_parity_content_hash_tags.sql` for `content_hash` and `document_tags`). The HNSW index is created by migration / `ensure_postgres_schema`; on very large tables, building it can take time.
+
+Leave `DATABASE_URL` unset to use **SQLite** at `DATABASE_PATH` (default `ledgerly.db` in config). If you already have data in `finelly.db`, set `DATABASE_PATH=finelly.db` in `.env` or rename the file to `ledgerly.db`.
+
+### Hosted Supabase logging (optional; separate from app database)
+
+**App data** and **error telemetry** use different settings. You can keep documents/embeddings **local** (SQLite or local Postgres) while still sending **sanitized** server events to a **hosted** Supabase project for the dashboard.
+
+| Purpose | Variable | Typical use |
+|--------|-----------|-------------|
+| Documents, chunks, embeddings, financial tables | `DATABASE_URL` | Unset → local SQLite; set → Postgres (local Supabase, Docker, or cloud). |
+| Fire-and-forget error / slowdown logs (no PII) | `REMOTE_LOG_URL`, `REMOTE_LOG_SECRET`, optional `SUPABASE_ANON_KEY`, `REMOTE_LOG_INSTANCE_ID` | Point `REMOTE_LOG_URL` at your **hosted** Edge Function, e.g. `https://YOUR_PROJECT_REF.supabase.co/functions/v1/ingest-remote-log`. |
+
+`REMOTE_LOG_URL` does **not** use `DATABASE_URL`. Deploy the Edge Function and apply the `remote_log_events` migration on the **hosted** project (see [`supabase/README.md`](supabase/README.md)). Use `REMOTE_LOG_INSTANCE_ID` (e.g. a UUID) to distinguish dev vs production instances in the same table.
 
 Start the API:
 
@@ -58,19 +89,21 @@ Default: `http://localhost:8000`. The same server serves the **web UI** at the r
 
 ## Run with Docker
 
-The simplest way to run Verbiage (no Python or Ollama installed on the host) is with Docker. **No .env or secrets are required** for the default setup (SQLite + Ollama in containers).
+The simplest way to run Ledgerly (no Python or Ollama installed on the host) is with Docker. **No .env or secrets are required** for the default setup.
+
+Compose includes an internal **Postgres 16 + pgvector** service (not published on the host — only the app container can connect). The app sets `DATABASE_URL` to that database so `/ask` uses indexed vector search. Schema is created on first startup (`ensure_postgres_schema`). Data lives in the **`postgres_data`** Docker volume alongside Ollama and app volumes.
 
 **Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed (Windows, Mac, or Linux).
 
 ### Main path: launcher script
 
-1. Open a terminal in the Verbiage project folder (the one that contains `docker-compose.yml`).
+1. Open a terminal in the Ledgerly project folder (the one that contains `docker-compose.yml`).
 2. **Windows:** Double-click **`Start.bat`** or run `Start.bat` from a terminal. The script starts the containers, waits for Ollama, pulls the models (one-time), then opens http://localhost:8000/ in your browser.
 3. **Mac/Linux:** Run `./start.sh`. Then open **http://localhost:8000/** in your browser.
 
-First run may take several minutes while models download. Later runs are quick.
+First run may take **much longer** than later runs (Docker images plus several gigabytes of Ollama models). **Later starts** are usually on the order of a few minutes once everything is cached; **daily use** after that is mostly startup time for containers, not re-downloads. For a plain-language table of what to expect (useful when handing the ZIP or installer to someone else), see **`install-instructions.md`** in the project root.
 
-**To stop:** In the same folder run `docker compose down`. Data (SQLite DB and Ollama models) is kept in Docker volumes.
+**To stop:** In the same folder run `docker compose down`. Data (Postgres, Ollama models, `/data` volume) is kept in Docker volumes.
 
 ### Alternative: manual Compose
 
@@ -82,16 +115,20 @@ docker compose up -d
 Then one-time, pull the models:
 
 ```bash
-docker compose exec ollama ollama pull llama3.1:8b
+docker compose exec ollama ollama pull qwen3:8b
 docker compose exec ollama ollama pull nomic-embed-text
-docker compose exec ollama ollama pull qwen2.5vl:7b
+docker compose exec ollama ollama pull llava:7b
 ```
+
+Vision and OCR behavior (including when to use **OCR** vs vision for PDFs) is described under [Vision, OCR, and memory](#vision-ocr-and-memory-what-users-do-vs-what-admins-configure) above.
 
 Open **http://localhost:8000/**.
 
 ### Optional: use your own .env
 
-To override defaults (e.g. Supabase, OpenAI, Google Drive), create a `.env` from `.env.example` and add under the `verbiage` service in `docker-compose.yml`: `env_file: .env`. Do not commit real secrets to the repo.
+`docker-compose.yml` already uses `env_file: .env` for the `ledgerly` service. Variables in the `environment:` block **override** `.env` for those keys — notably **`DATABASE_URL`** is fixed to the internal Postgres URL so the portable/Docker path always uses pgvector. To point the container at a different database you’d need to edit compose (not typical for the zip install).
+
+Do not commit real secrets to the repo.
 
 ---
 
@@ -105,14 +142,16 @@ You get a single-page UI with **menu/tabs** so you can focus on one task at a ti
 
 ### Tabs
 
-- **Ingest** — Paste or enter financial document text, or upload a PDF file; optionally set doc ID, title, and source. Submit to run ingest. Success or error message appears below the form. PDF upload uses the same chunk/embed pipeline as pasted text (requires the `pypdf` dependency from `pip install -r requirements.txt`). To ingest JPG or PNG images (e.g. bank screenshots), use **POST /ingest/image** (see curl below); the server uses LLaVA to extract visible text then ingests it like a text doc.
+- **Ingest** — Paste or enter financial document text, or upload a PDF file; optionally set doc ID, title, and source. Submit to run ingest. Success or error message appears below the form. **PDF text mode** (PDF uploads only): *Auto* uses the PDF’s text layer when it looks complete; otherwise it tries **Tesseract OCR** (install the `tesseract` binary on the host; Docker image includes it) and, for smaller PDFs, may fall back to the **vision** model (LLM per page, capped—see `PDF_VISION_MAX_PAGES` in `.env.example`). For scans, **OCR** is usually the best first choice (no need to manage GPU memory). Choose *Text layer only* for normal text PDFs; *Vision* only if OCR is insufficient. Same `pdf_text_mode` field applies to **POST /ingest/pdf** and **POST /ingest/jobs** (queued multi-file). JPG/PNG still use **POST /ingest/image** (vision model), not these PDF modes.
 - **Ask** — Enter a question (e.g. What does this document say about early withdrawal? or Summarize the fees and rates.). Optionally limit the search to one document (dropdown). Submit to get an answer and expandable “Source chunks.” The document dropdown is filled from the list of ingested documents and is refreshed after each ingest.
+
+**Ollama preload:** Opening the **Ask** or **Add document** tab triggers a background warmup (`POST /warmup/ask` or `/warmup/ingest`) that loads the embedding model and the text LLM (Ask) or vision model (Ingest) into Ollama RAM. You may see a brief “Getting AI ready…” hint; the first real question or upload should be faster than a cold start. Disable with `OLLAMA_WARMUP_ENABLED=false` in `.env`. Tune `OLLAMA_WARMUP_KEEP_ALIVE` and `OLLAMA_WARMUP_SESSION_SEC` to control how long models stay loaded.
 
 The last selected tab is remembered in the browser (localStorage) for the next visit.
 
 ### Document review (Documents tab)
 
-Click **Documents** in the header to open the Document review tab. Click **Load documents** (or switch to the tab) to fetch and show ingested documents: title, snippet, chunk count, tags, and linked account. Each row has an **Edit** button; use it to change the document’s tags (comma-separated) and which account it is linked to. Save updates the document via `PATCH /documents/{doc_id}`; omit a field in the API to leave it unchanged.
+Click **Documents** in the header to open the Document review tab. Click **Load documents** (or switch to the tab) to fetch and show ingested documents: title, snippet, chunk count, tags, and linked account. Each row has **Edit** (tags, source path, linked account via `PATCH /documents/{doc_id}`) and **Delete** (`DELETE /documents/{doc_id}`), which removes the document and any positions or obligations linked to it via `document_id`. Accounts are kept; only the document link on the account is cleared.
 
 ### Quick test flow
 
@@ -120,6 +159,10 @@ Click **Documents** in the header to open the Document review tab. Click **Load 
 2. Switch to the **Ingest** tab, paste some text (or upload a PDF), set a title and doc_id if you like, then submit.
 3. Open the **Documents** tab and click **Load documents** to confirm the new doc appears; use **Edit** to set tags or linked account if you like.
 4. Switch to the **Ask** tab, type a question that relates to the ingested text, then submit. Check the answer and “Source chunks.”
+
+### Errors and Reference IDs
+
+If the UI shows an error while **Ingest**, **Ask**, or **Saved data** is running (for example AI backend timeouts or connection issues), the red message often includes **Reference ID: …**. Give that exact ID to whoever runs Ledgerly; they can `grep` the ID in API logs (`request_id`) or centralized logs (e.g. Grafana/Loki) to find what failed. Responses also expose the same correlation ID in `X-Request-ID` HTTP headers where applicable.
 
 ---
 
@@ -169,6 +212,17 @@ curl -s -X POST "http://localhost:8000/ingest" \
   -d '{"text": "Short document to ingest."}'
 ```
 
+### Ingest PDF (POST /ingest/pdf)
+
+Multipart: required `file` (PDF). Optional: `doc_id`, `title`, `source`, `chunk_size`, `chunk_overlap`, `tags`, `account_id`, `confirm_duplicate_content`, and **`pdf_text_mode`**: `auto` (default), `native` (embedded text only—fails on image-only PDFs), `ocr` (Tesseract on rendered pages), `vision` (LLM per page; max pages from `PDF_VISION_MAX_PAGES`). Large scanned PDFs in `auto` use OCR only (no vision fallback). Requires `pypdf`; OCR additionally needs `pymupdf`, `pytesseract`, `Pillow`, and the **tesseract** system binary.
+
+```bash
+curl -s -X POST "http://localhost:8000/ingest/pdf" \
+  -F "file=@scan.pdf" \
+  -F "pdf_text_mode=ocr" \
+  -F "title=Scanned statement"
+```
+
 ### Ingest image (POST /ingest/image)
 
 Accepts JPG or PNG (e.g. bank screenshots). Uses LLaVA (Ollama) to extract all visible text, then runs the same chunk/embed pipeline as text and PDF. Requires LLaVA to be available (same as `/ask/image`). Multipart form: required `file`; optional `doc_id`, `title`, `source`, `chunk_size`, `chunk_overlap`, `tags`, `confirm_duplicate_content`. Max size 10 MB.
@@ -212,7 +266,7 @@ curl -s -X POST "http://localhost:8000/ask" \
 
 ### Ask image (POST /ask/image) — LLaVA vision
 
-**POST /ask/image** sends an image to the vision model (Ollama) and returns descriptive text. No RAG. Requires `ollama pull qwen2.5vl:7b` and `LLAVA_MODEL` in config (default `qwen2.5vl:7b`); uses the same `LLM_BASE_URL` as the text LLM.
+**POST /ask/image** sends an image to the vision model (Ollama) and returns descriptive text. No RAG. Requires `ollama pull` for whatever you set as `LLAVA_MODEL` (default `llava:7b`); uses the same `LLM_BASE_URL` as the text LLM. If Ollama runs out of memory, fix **`LLAVA_MODEL`** / install a smaller vision model—see [Vision, OCR, and memory](#vision-ocr-and-memory-what-users-do-vs-what-admins-configure).
 
 **Option 1: JSON body** — provide a URL to an image and an optional prompt:
 
