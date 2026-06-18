@@ -3494,7 +3494,7 @@
         'Herding tiny accountants…',
         'Still running — no hamsters were harmed…'
       ];
-      var ASK_WITTY_INTERVAL_MS = 4500;
+      var ASK_WITTY_INTERVAL_MS = 8000;
       var _askWittyTimer = null;
       var _askWittyIndex = 0;
       var _askPhaseUntil = 0;
@@ -3688,13 +3688,20 @@
         if (!list) return;
         clearAskHistoryPollTimers();
         list.innerHTML = '';
-        if (empty) empty.hidden = true;
+        if (empty) {
+          empty.textContent = 'No questions yet.';
+          empty.hidden = true;
+        }
         if (loading) loading.hidden = false;
         try {
           var res = await fetch(getApiBase() + '/ask/history');
-          var items = await res.json().catch(function () { return []; });
+          var data = await res.json().catch(function () { return null; });
           if (loading) loading.hidden = true;
-          if (!items || items.length === 0) {
+          if (!res.ok) {
+            throw new Error(formatApiErrorForUser(data, 'Could not load history', res));
+          }
+          var items = Array.isArray(data) ? data : [];
+          if (items.length === 0) {
             if (empty) empty.hidden = false;
             return;
           }
@@ -4131,15 +4138,20 @@
       const pastList = document.getElementById('past-list');
       if (btnPast) btnPast.addEventListener('click', async function () {
         pastList.innerHTML = '';
+        pastEmpty.textContent = 'No past decisions yet.';
         pastEmpty.hidden = true;
         pastLoading.hidden = false;
         startSlowWait(pastLoading);
         try {
           const res = await fetch(getApiBase() + '/decision/history');
-          const items = await res.json().catch(function () { return []; });
+          const data = await res.json().catch(function () { return null; });
           stopSlowWait(pastLoading);
           pastLoading.hidden = true;
-          if (!items || items.length === 0) {
+          if (!res.ok) {
+            throw new Error(formatApiErrorForUser(data, 'Could not load history', res));
+          }
+          const items = Array.isArray(data) ? data : [];
+          if (items.length === 0) {
             pastEmpty.hidden = false;
             return;
           }
