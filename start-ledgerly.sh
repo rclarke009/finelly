@@ -3,11 +3,23 @@ set -e
 LEDGERLY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$LEDGERLY_DIR"
 
+if [ -z "${OLLAMA_NUM_THREADS:-}" ]; then
+  export OLLAMA_NUM_THREADS="$(python3 -c 'from app.cpu_defaults import default_ollama_num_threads; print(default_ollama_num_threads())')"
+  echo "OLLAMA_NUM_THREADS=${OLLAMA_NUM_THREADS} (auto-detected, conservative)"
+fi
+
+OLLAMA_ALREADY_RUNNING=false
+if curl -s -o /dev/null -w "%{http_code}" http://localhost:11434/api/tags 2>/dev/null | grep -q 200; then
+  OLLAMA_ALREADY_RUNNING=true
+fi
+
 # Start Ollama in background if not already responding
-if ! curl -s -o /dev/null -w "%{http_code}" http://localhost:11434/api/tags 2>/dev/null | grep -q 200; then
+if [ "$OLLAMA_ALREADY_RUNNING" = false ]; then
   echo "Starting Ollama..."
   ollama serve &
   sleep 2
+elif [ -n "${OLLAMA_NUM_THREADS:-}" ]; then
+  echo "Note: Ollama is already running; restart it for OLLAMA_NUM_THREADS=${OLLAMA_NUM_THREADS} to take effect."
 fi
 
 # Wait for Ollama to be ready (up to 30s), then ensure vision model is available for /ask/image and /ingest/image

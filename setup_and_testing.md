@@ -83,6 +83,8 @@ Start the API:
 uvicorn app.main:app --reload
 ```
 
+Or use `./start-ledgerly.sh`, which also auto-sets `OLLAMA_NUM_THREADS` when unset (same conservative default as `start.sh`).
+
 Default: `http://localhost:8000`. The same server serves the **web UI** at the root URL (see below).
 
 ---
@@ -100,6 +102,8 @@ Compose includes an internal **Postgres 16 + pgvector** service (not published o
 1. Open a terminal in the Ledgerly project folder (the one that contains `docker-compose.yml`).
 2. **Windows:** Double-click **`Start.bat`** or run `Start.bat` from a terminal. The script starts the containers, waits for Ollama, pulls the models (one-time), then opens http://localhost:8000/ in your browser.
 3. **Mac/Linux:** Run `./start.sh`. Then open **http://localhost:8000/** in your browser.
+
+`start.sh` auto-sets `OLLAMA_NUM_THREADS` from your CPU count when it is not already in `.env` (conservative default to reduce fan noise). Set `OLLAMA_NUM_THREADS` explicitly to override.
 
 First run may take **much longer** than later runs (Docker images plus several gigabytes of Ollama models). **Later starts** are usually on the order of a few minutes once everything is cached; **daily use** after that is mostly startup time for containers, not re-downloads. For a plain-language table of what to expect (useful when handing the ZIP or installer to someone else), see **`install-instructions.md`** in the project root.
 

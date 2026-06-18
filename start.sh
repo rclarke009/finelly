@@ -2,6 +2,11 @@
 set -e
 cd "$(dirname "$0")"
 
+if [ -z "${OLLAMA_NUM_THREADS:-}" ]; then
+  export OLLAMA_NUM_THREADS="$(python3 -c 'from app.cpu_defaults import default_ollama_num_threads; print(default_ollama_num_threads())')"
+  echo "OLLAMA_NUM_THREADS=${OLLAMA_NUM_THREADS} (auto-detected, conservative)"
+fi
+
 echo "Starting Ledgerly (Postgres+pgvector internal, Ollama, app, finance MCP)..."
 docker compose up -d
 echo "Finance MCP (optional, e.g. Cursor): http://localhost:8001/mcp — set FINNHUB_API_KEY in .env for live quotes."

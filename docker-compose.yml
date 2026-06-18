@@ -30,6 +30,10 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ledgerly-ollama
+    environment:
+      # Caps llama.cpp thread pool during inference (read by Ollama server, not the app).
+      # Lower = cooler laptop, slower answers. Override in .env (e.g. OLLAMA_NUM_THREADS=8).
+      - OLLAMA_NUM_THREADS=${OLLAMA_NUM_THREADS:-4}
     ports:
       - "11434:11434"
     volumes:
