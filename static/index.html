@@ -396,6 +396,54 @@
     .ask-general-open-form .ask-subheading {
       margin-bottom: 0.5rem;
     }
+    .ask-history-item {
+      margin: 0 0 0.65rem 0;
+      padding: 0.65rem 0.85rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .ask-history-item:last-child {
+      margin-bottom: 0;
+    }
+    .ask-history-item summary {
+      cursor: pointer;
+      font-weight: 500;
+      line-height: 1.4;
+      list-style: none;
+    }
+    .ask-history-item summary::-webkit-details-marker {
+      display: none;
+    }
+    .ask-history-item summary::before {
+      content: '▸ ';
+      color: var(--text-muted);
+      font-size: 0.85em;
+    }
+    .ask-history-item[open] summary::before {
+      content: '▾ ';
+    }
+    .ask-history-item[open] summary {
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+    .ask-history-meta {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 400;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+    .ask-history-body {
+      margin-top: 0.5rem;
+      padding-top: 0.65rem;
+      border-top: 1px solid var(--border);
+    }
+    .ask-history-pending {
+      font-size: var(--text-help);
+      color: var(--text-muted);
+      font-style: italic;
+    }
     /* Per-section loading/answer sits directly under its form */
     #form-ask-general-open + .message,
     #form-ask-general-template + .message {
@@ -1049,13 +1097,6 @@
         <form id="form-ask">
           <label for="ask-question">Question (optional if you use a preset above)</label>
           <textarea id="ask-question" name="question" rows="4" placeholder="Or type your question here…"></textarea>
-          <details class="ingest-text-details">
-            <summary>Limit to one document (optional)</summary>
-            <label for="ask-doc_id">Document</label>
-            <select id="ask-doc_id" name="doc_id">
-              <option value="">All documents</option>
-            </select>
-          </details>
           <div class="ask-actions-row">
             <button type="submit" id="btn-ask-submit">Ask</button>
             <div class="ask-mic-group">
@@ -1063,6 +1104,13 @@
               <button type="button" id="btn-ask-mic">Speak question</button>
             </div>
           </div>
+          <details class="ingest-text-details">
+            <summary>Limit to one document (optional)</summary>
+            <label for="ask-doc_id">Document</label>
+            <select id="ask-doc_id" name="doc_id">
+              <option value="">All documents</option>
+            </select>
+          </details>
         </form>
         <details id="ask-stream-now-details" class="ingest-text-details" hidden>
           <summary>Answer now (uses more CPU)</summary>
@@ -1122,6 +1170,14 @@
           </div>
         </div>
       </details>
+
+      <div class="ask-section-block" id="ask-history-section">
+        <h3>Previous questions</h3>
+        <p class="ask-section-intro">Your recent Ledgerly questions and answers are saved here.</p>
+        <div id="ask-history-loading" class="message loading" hidden>Loading…</div>
+        <p id="ask-history-empty" class="field-hint" hidden>No questions yet.</p>
+        <div id="ask-history-list"></div>
+      </div>
     </section>
 
     <section id="panel-manage" class="panel">
@@ -1312,9 +1368,14 @@
         }
       }
 
-      function startSlowWait(el) {
+      function startSlowWait(el, opts) {
         if (!el) return;
         stopSlowWait(el);
+        if (opts && opts.immediate) {
+          ensureSlowWaitWave(el);
+          el.classList.add('slow-wait-active');
+          return;
+        }
         var t = setTimeout(function () {
           if (el.hidden) return;
           ensureSlowWaitWave(el);
@@ -1513,7 +1574,7 @@
           overlay.hidden = false;
           overlay.classList.remove('startup-failed');
         }
-        startSlowWait(startupWait);
+        startSlowWait(startupWait, { immediate: true });
         document.body.classList.add('app-startup-lock');
         fetch(getApiBase() + '/health', { cache: 'no-store' })
           .then(function (r) {
@@ -1806,7 +1867,10 @@
         try { localStorage.setItem(TAB_KEY, name); } catch (e) {}
         if (name === 'ingest' && typeof loadWatchedLibrarySettings === 'function') loadWatchedLibrarySettings();
         if (name === 'home' && typeof loadDashboard === 'function') loadDashboard();
-        if (name === 'ask') warmupOllama('ask');
+        if (name === 'ask') {
+          warmupOllama('ask');
+          if (typeof loadAskHistory === 'function') loadAskHistory();
+        }
         if (name === 'ingest') warmupOllama('ingest');
         if (name === 'manage') {
           var ms = 'data';
@@ -3078,7 +3142,7 @@
           msg.textContent = 'Queueing ' + form.file.files.length + ' file(s)…';
           msg.className = 'message loading';
           msg.hidden = false;
-          startSlowWait(msg);
+          startSlowWait(msg, { immediate: true });
           setIngestBusyLocal(true);
           var fdq = new FormData();
           for (var fi = 0; fi < form.file.files.length; fi++) {
@@ -3159,7 +3223,7 @@
         msg.className = 'message loading';
         msg.hidden = false;
         prepareSlowWaitElement(msg);
-        startSlowWait(msg);
+        startSlowWait(msg, { immediate: true });
         setIngestBusyLocal(true);
         function pickDocId(overrideDocId) {
           const fromForm = form.doc_id.value.trim();
@@ -3471,11 +3535,9 @@
         if (!el) return;
         el.hidden = false;
         el.classList.add('ask-loading-active');
-        ensureSlowWaitWave(el);
-        el.classList.add('slow-wait-active');
         setAskLoadingText(el, initialText);
         startAskWittyRotation(el);
-        startSlowWait(el);
+        startSlowWait(el, { immediate: true });
       }
 
       function hideAskLoading(el) {
@@ -3515,6 +3577,133 @@
           .catch(function () { banner.hidden = true; });
       }
 
+      var _askHistoryPollTimers = {};
+
+      function clearAskHistoryPollTimers() {
+        Object.keys(_askHistoryPollTimers).forEach(function (key) {
+          clearInterval(_askHistoryPollTimers[key]);
+          delete _askHistoryPollTimers[key];
+        });
+      }
+
+      function renderAskHistoryItem(item) {
+        var details = document.createElement('details');
+        details.className = 'ask-history-item';
+        details.dataset.historyId = item.id;
+
+        var summary = document.createElement('summary');
+        var qText = item.question || '—';
+        if (item.status === 'pending') {
+          summary.textContent = qText + ' — preparing…';
+        } else {
+          summary.textContent = qText;
+        }
+        var meta = document.createElement('span');
+        meta.className = 'ask-history-meta';
+        var dateStr = item.asked_at ? new Date(item.asked_at * 1000).toLocaleString() : '—';
+        meta.textContent = dateStr;
+        summary.appendChild(meta);
+        details.appendChild(summary);
+
+        var body = document.createElement('div');
+        body.className = 'ask-history-body';
+
+        if (item.status === 'pending') {
+          var pendingMsg = document.createElement('p');
+          pendingMsg.className = 'ask-history-pending';
+          pendingMsg.textContent = 'Your answer is being prepared. You can leave and check back here.';
+          body.appendChild(pendingMsg);
+        } else if (item.status === 'failed') {
+          var errEl = document.createElement('div');
+          errEl.className = 'message error';
+          errEl.textContent = item.error || 'This question could not be answered.';
+          body.appendChild(errEl);
+        } else {
+          var mdEl = document.createElement('div');
+          mdEl.className = 'answer-md';
+          var extraEl = document.createElement('div');
+          extraEl.className = 'ask-answer-extra';
+          body.appendChild(mdEl);
+          body.appendChild(extraEl);
+          var chartInst = [];
+          details._chartInst = chartInst;
+          details.addEventListener('toggle', function () {
+            if (details.open && !details.dataset.rendered) {
+              renderAnswerBlocks(
+                mdEl,
+                extraEl,
+                item.answer || '—',
+                { tables: item.tables || [], charts: item.charts || [] },
+                chartInst
+              );
+              details.dataset.rendered = '1';
+            }
+          });
+        }
+
+        details.appendChild(body);
+        return details;
+      }
+
+      function pollPendingAskHistoryItem(item) {
+        if (!item.job_id || item.status !== 'pending') return;
+        if (_askHistoryPollTimers[item.id]) return;
+        var pollMs = 5000;
+        _askHistoryPollTimers[item.id] = setInterval(function () {
+          fetch(getApiBase() + '/ask/jobs/' + encodeURIComponent(item.job_id))
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              if (!data) return;
+              if (data.status === 'success' || data.status === 'failed') {
+                clearInterval(_askHistoryPollTimers[item.id]);
+                delete _askHistoryPollTimers[item.id];
+                loadAskHistory();
+              }
+            })
+            .catch(function () {});
+        }, pollMs);
+      }
+
+      function pollPendingAskHistory(items) {
+        (items || []).forEach(function (item) {
+          pollPendingAskHistoryItem(item);
+        });
+      }
+
+      async function loadAskHistory() {
+        var loading = document.getElementById('ask-history-loading');
+        var empty = document.getElementById('ask-history-empty');
+        var list = document.getElementById('ask-history-list');
+        if (!list) return;
+        clearAskHistoryPollTimers();
+        list.innerHTML = '';
+        if (empty) empty.hidden = true;
+        if (loading) loading.hidden = false;
+        try {
+          var res = await fetch(getApiBase() + '/ask/history');
+          var items = await res.json().catch(function () { return []; });
+          if (loading) loading.hidden = true;
+          if (!items || items.length === 0) {
+            if (empty) empty.hidden = false;
+            return;
+          }
+          items.forEach(function (item) {
+            list.appendChild(renderAskHistoryItem(item));
+          });
+          pollPendingAskHistory(items);
+        } catch (err) {
+          if (loading) loading.hidden = true;
+          if (empty) {
+            empty.textContent = 'Could not load history. ' + formatFetchError(err);
+            empty.hidden = false;
+          }
+        }
+      }
+
+      function refreshAskHistory() {
+        loadAskHistory();
+      }
+
       async function pollAskJob(jobId, submitBtn, targets) {
         var pollMs = 5000;
         while (true) {
@@ -3530,6 +3719,7 @@
             targets.answerBlock.hidden = false;
             hideAskLoading(targets.loading);
             setAskSubmitLoading(false);
+            refreshAskHistory();
             return;
           }
           if (data.status === 'failed') {
@@ -3577,6 +3767,7 @@
             askLoading,
             'Your answer is being prepared (~' + waitMin + ' min). You can leave this page safely.'
           );
+          refreshAskHistory();
           await pollAskJob(data.job_id, submitBtn, targets);
         } catch (err) {
           msg.textContent = 'Request failed: ' + formatFetchError(err);
@@ -3692,6 +3883,7 @@
               ? { tables: structuredPayload.tables || [], charts: structuredPayload.charts || [] }
               : null;
             renderAnswerBlocks(answerMd, answerExtra, finalMd, structFinal, chartAskInst);
+            refreshAskHistory();
           }
           hideAskLoading(askLoading);
           setAskSubmitLoading(false);

@@ -147,6 +147,7 @@ from app.models import (
     UserDataSource,
     WebSource,
     DecisionHistoryItem,
+    AskHistoryItem,
     DashboardResponse,
     ConfirmExtractionRequest,
     ConfirmExtractionResponse,
@@ -196,6 +197,7 @@ from app.ingest_worker import ingest_worker_loop
 from app.ingest_jobs import IngestJob, IngestJobKind
 from app.pdf_ingest import parse_pdf_text_mode, resolve_pdf_for_ingest
 from app.ask_graph import build_prompt_and_chunks
+from app.ask_history import fetch_ask_history, insert_complete_answer, insert_pending_for_job
 from app.ask_queue import AskJobStore
 from app.ask_worker import ask_worker_loop
 from app.ask_jobs import AskJob
@@ -1111,8 +1113,15 @@ async def ask(request: Request, ask_request: AskRequest):
                     top_chunks=len(top_chunks),
                     total_ms=total_ms,
                 )
+                no_ctx_msg = "I don't have relevant context or data to answer that question."
+                insert_complete_answer(
+                    conn,
+                    ask_request,
+                    no_ctx_msg,
+                    route=route,
+                )
                 return AskResponse(
-                    answer="I don't have relevant context or data to answer that question.",
+                    answer=no_ctx_msg,
                     top_chunks=[],
                     tables=[],
                     charts=[],
@@ -1121,8 +1130,15 @@ async def ask(request: Request, ask_request: AskRequest):
             if direct_answer:
                 total_ms = _elapsed_ms(t0)
                 logger.info("Ask: fast path in %d ms route=%s", total_ms, route)
+                answer_msg = normalize_markdown_layout(direct_answer)
+                insert_complete_answer(
+                    conn,
+                    ask_request,
+                    answer_msg,
+                    route=route,
+                )
                 return AskResponse(
-                    answer=normalize_markdown_layout(direct_answer),
+                    answer=answer_msg,
                     top_chunks=top_chunks,
                     tables=[],
                     charts=[],
@@ -1148,6 +1164,14 @@ async def ask(request: Request, ask_request: AskRequest):
                 build_ms,
                 rate_limit_ms,
                 llm_ms,
+            )
+            insert_complete_answer(
+                conn,
+                ask_request,
+                answer,
+                tables=[t.model_dump() for t in tables],
+                charts=[c.model_dump() for c in charts],
+                route=route,
             )
             return AskResponse(answer=answer, top_chunks=top_chunks, tables=tables, charts=charts)
 
@@ -1259,14 +1283,19 @@ async def _stream_ask_full(
         msg = "I don't have relevant context or data to answer that question."
         async for line in _stream_direct_answer(msg, []):
             yield line
+        with app_db_connection(request.app) as conn:
+            insert_complete_answer(conn, ask_request, msg, route=route)
         return
 
     meta = {"top_chunks": [c.model_dump() if hasattr(c, "model_dump") else c for c in top_chunks]}
     yield json.dumps(meta) + "\n"
 
     if direct_answer:
+        answer_msg = normalize_markdown_layout(direct_answer)
         async for line in _stream_direct_answer(direct_answer, meta["top_chunks"]):
             yield line
+        with app_db_connection(request.app) as conn:
+            insert_complete_answer(conn, ask_request, answer_msg, route=route)
         return
 
     rate_limiter = request.app.state.rate_limiter
@@ -1275,14 +1304,27 @@ async def _stream_ask_full(
         await asyncio.sleep(ASK_COOLDOWN_AFTER_PREP_SEC)
 
     yield json.dumps({"phase": "generating"}) + "\n"
+    stream_result: list[tuple[str, list, list]] = []
     async for line in _stream_ask_generator(
         prompt,
         top_chunks,
         stream_start_time=stream_start_time,
         trace_ctx=trace_ctx,
         skip_meta=True,
+        stream_result=stream_result,
     ):
         yield line
+    if stream_result:
+        answer, tables, charts = stream_result[0]
+        with app_db_connection(request.app) as conn:
+            insert_complete_answer(
+                conn,
+                ask_request,
+                answer,
+                tables=tables,
+                charts=charts,
+                route=route,
+            )
 
 
 async def _stream_ask_generator(
@@ -1292,6 +1334,7 @@ async def _stream_ask_generator(
     trace_ctx: AskTraceContext | None = None,
     *,
     skip_meta: bool = False,
+    stream_result: list[tuple[str, list, list]] | None = None,
 ):
     """Yield NDJSON lines: optional top_chunks, then deltas from LLM, then structured, then done."""
     t0 = stream_start_time if stream_start_time is not None else time.perf_counter()
@@ -1374,6 +1417,14 @@ async def _stream_ask_generator(
     body, tail = split_structured(accumulated)
     answer, tables, charts = merge_structured_to_response(body, tail)
     answer = normalize_markdown_layout(answer)
+    if stream_result is not None:
+        stream_result.append(
+            (
+                answer,
+                [t.model_dump() for t in tables],
+                [c.model_dump() for c in charts],
+            )
+        )
     structured = {
         "answer": answer,
         "tables": [t.model_dump() for t in tables],
@@ -1423,7 +1474,16 @@ async def ask_jobs_enqueue(request: Request, ask_request: AskRequest):
     est = ASK_QUEUE_ESTIMATED_WAIT_SEC + pending * 120
     job.eta_seconds = est
     await store.add(job)
+    with app_db_connection(request.app) as conn:
+        insert_pending_for_job(conn, job.id, ask_request, asked_at=job.created_at)
     return AskJobEnqueueResponse(job_id=job.id, estimated_wait_sec=est)
+
+
+@app.get("/ask/history", response_model=list[AskHistoryItem])
+def get_ask_history(request: Request, limit: int = 50):
+    """List recent Ask Ledgerly questions and answers."""
+    with app_db_connection(request.app) as conn:
+        return fetch_ask_history(conn, limit=limit)
 
 
 @app.get("/ask/jobs/{job_id}", response_model=AskJobStatusResponse)

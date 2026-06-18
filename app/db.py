@@ -170,6 +170,22 @@ def create_db(conn: Any) -> Any:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_obligations_due_date ON obligations(due_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trigger_events_evaluated_at ON trigger_events(evaluated_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_decision_history_evaluated_at ON decision_history(evaluated_at)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ask_history (
+            id TEXT PRIMARY KEY,
+            job_id TEXT,
+            asked_at INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT,
+            tables_json TEXT,
+            charts_json TEXT,
+            route TEXT,
+            doc_filter TEXT,
+            error TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ask_history_asked_at ON ask_history(asked_at)")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS document_tags (
@@ -1046,6 +1062,138 @@ def list_decision_history(
     params.append(limit)
     cursor = conn.execute(sql, params)
     return cursor.fetchall()
+
+
+ASK_HISTORY_RETENTION_LIMIT = 100
+
+
+def insert_ask_history_pending(
+    conn: sqlite3.Connection,
+    id: str,
+    job_id: str,
+    asked_at: int,
+    question: str,
+    doc_filter: str | None = None,
+) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_ask_history_pending(
+            conn, id, job_id, asked_at, question, doc_filter
+        )
+    conn.execute(
+        """INSERT INTO ask_history(id, job_id, asked_at, status, question, doc_filter)
+           VALUES (?,?,?,?,?,?)""",
+        (id, job_id, asked_at, "pending", question, doc_filter),
+    )
+    _prune_ask_history(conn)
+
+
+def insert_ask_history_complete(
+    conn: sqlite3.Connection,
+    id: str,
+    asked_at: int,
+    question: str,
+    answer: str,
+    tables_json: str | None = None,
+    charts_json: str | None = None,
+    route: str | None = None,
+    doc_filter: str | None = None,
+) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.insert_ask_history_complete(
+            conn,
+            id,
+            asked_at,
+            question,
+            answer,
+            tables_json,
+            charts_json,
+            route,
+            doc_filter,
+        )
+    conn.execute(
+        """INSERT INTO ask_history(
+               id, job_id, asked_at, status, question, answer,
+               tables_json, charts_json, route, doc_filter
+           ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            id,
+            None,
+            asked_at,
+            "complete",
+            question,
+            answer,
+            tables_json,
+            charts_json,
+            route,
+            doc_filter,
+        ),
+    )
+    _prune_ask_history(conn)
+
+
+def update_ask_history_result(
+    conn: sqlite3.Connection,
+    job_id: str,
+    *,
+    status: str,
+    answer: str | None = None,
+    tables_json: str | None = None,
+    charts_json: str | None = None,
+    route: str | None = None,
+    error: str | None = None,
+) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.update_ask_history_result(
+            conn,
+            job_id,
+            status=status,
+            answer=answer,
+            tables_json=tables_json,
+            charts_json=charts_json,
+            route=route,
+            error=error,
+        )
+    conn.execute(
+        """UPDATE ask_history SET status=?, answer=?, tables_json=?, charts_json=?,
+           route=?, error=? WHERE job_id=?""",
+        (status, answer, tables_json, charts_json, route, error, job_id),
+    )
+
+
+def list_ask_history(
+    conn: sqlite3.Connection,
+    limit: int = 50,
+) -> list[tuple]:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.list_ask_history(conn, limit=limit)
+    cursor = conn.execute(
+        """SELECT id, job_id, asked_at, status, question, answer,
+                  tables_json, charts_json, route, doc_filter, error
+           FROM ask_history ORDER BY asked_at DESC LIMIT ?""",
+        (limit,),
+    )
+    return cursor.fetchall()
+
+
+def _prune_ask_history(conn: sqlite3.Connection) -> None:
+    if is_postgres_conn(conn):
+        from app import db_postgres
+
+        return db_postgres.prune_ask_history(conn)
+    conn.execute(
+        """DELETE FROM ask_history WHERE id NOT IN (
+               SELECT id FROM ask_history ORDER BY asked_at DESC LIMIT ?
+           )""",
+        (ASK_HISTORY_RETENTION_LIMIT,),
+    )
 
 
 def insert_rate_snapshot(

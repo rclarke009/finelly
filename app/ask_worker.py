@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from app.ask_graph import build_prompt_and_chunks
+from app.ask_history import update_job_result
 from app.ask_jobs import AskJob, AskJobStatus
 from app.ask_queue import AskJobStore
 from app.answer_format import merge_structured_to_response, normalize_markdown_layout, split_structured
@@ -53,6 +54,13 @@ async def _run_one_ask(app: Any, store: AskJobStore, job: AskJob) -> None:
             job.progress_pct = 100.0
             job.answer = "I don't have relevant context or data to answer that question."
             await store.update(job)
+            update_job_result(
+                conn,
+                job.id,
+                status="complete",
+                answer=job.answer,
+                route=route,
+            )
             return
 
         if direct_answer:
@@ -61,6 +69,13 @@ async def _run_one_ask(app: Any, store: AskJobStore, job: AskJob) -> None:
             job.progress_pct = 100.0
             job.answer = normalize_markdown_layout(direct_answer)
             await store.update(job)
+            update_job_result(
+                conn,
+                job.id,
+                status="complete",
+                answer=job.answer,
+                route=route,
+            )
             return
 
         await progress("generating")
@@ -76,6 +91,15 @@ async def _run_one_ask(app: Any, store: AskJobStore, job: AskJob) -> None:
         job.tables = [t.model_dump() for t in tables]
         job.charts = [c.model_dump() for c in charts]
         await store.update(job)
+        update_job_result(
+            conn,
+            job.id,
+            status="complete",
+            answer=job.answer,
+            tables=job.tables,
+            charts=job.charts,
+            route=route,
+        )
 
 
 async def ask_worker_loop(app: Any) -> None:
@@ -94,6 +118,8 @@ async def ask_worker_loop(app: Any) -> None:
                 job.stage = "failed"
                 job.error = str(e)
                 await store.update(job)
+                with app_db_connection(app) as conn:
+                    update_job_result(conn, job.id, status="failed", error=str(e))
             if ASK_QUEUE_INTER_JOB_SLEEP_SEC > 0:
                 await asyncio.sleep(ASK_QUEUE_INTER_JOB_SLEEP_SEC)
         except asyncio.CancelledError:

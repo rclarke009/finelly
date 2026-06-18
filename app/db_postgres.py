@@ -132,6 +132,22 @@ CREATE INDEX IF NOT EXISTS idx_positions_maturity ON positions(maturity_date);
 CREATE INDEX IF NOT EXISTS idx_obligations_due_date ON obligations(due_date);
 CREATE INDEX IF NOT EXISTS idx_trigger_events_evaluated_at ON trigger_events(evaluated_at);
 CREATE INDEX IF NOT EXISTS idx_decision_history_evaluated_at ON decision_history(evaluated_at);
+
+CREATE TABLE IF NOT EXISTS ask_history (
+    id TEXT PRIMARY KEY,
+    job_id TEXT,
+    asked_at BIGINT NOT NULL,
+    status TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT,
+    tables_json TEXT,
+    charts_json TEXT,
+    route TEXT,
+    doc_filter TEXT,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ask_history_asked_at ON ask_history(asked_at DESC);
 """
 
 
@@ -852,6 +868,99 @@ def list_decision_history(
     with conn.cursor() as cur:
         cur.execute(sql, params)
         return cur.fetchall()
+
+
+def insert_ask_history_pending(
+    conn: psycopg.Connection,
+    id: str,
+    job_id: str,
+    asked_at: int,
+    question: str,
+    doc_filter: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO ask_history(id, job_id, asked_at, status, question, doc_filter)
+               VALUES (%s,%s,%s,%s,%s,%s)""",
+            (id, job_id, asked_at, "pending", question, doc_filter),
+        )
+    prune_ask_history(conn)
+
+
+def insert_ask_history_complete(
+    conn: psycopg.Connection,
+    id: str,
+    asked_at: int,
+    question: str,
+    answer: str,
+    tables_json: str | None = None,
+    charts_json: str | None = None,
+    route: str | None = None,
+    doc_filter: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO ask_history(
+                   id, job_id, asked_at, status, question, answer,
+                   tables_json, charts_json, route, doc_filter
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                id,
+                None,
+                asked_at,
+                "complete",
+                question,
+                answer,
+                tables_json,
+                charts_json,
+                route,
+                doc_filter,
+            ),
+        )
+    prune_ask_history(conn)
+
+
+def update_ask_history_result(
+    conn: psycopg.Connection,
+    job_id: str,
+    *,
+    status: str,
+    answer: str | None = None,
+    tables_json: str | None = None,
+    charts_json: str | None = None,
+    route: str | None = None,
+    error: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """UPDATE ask_history SET status=%s, answer=%s, tables_json=%s, charts_json=%s,
+               route=%s, error=%s WHERE job_id=%s""",
+            (status, answer, tables_json, charts_json, route, error, job_id),
+        )
+
+
+def list_ask_history(
+    conn: psycopg.Connection,
+    limit: int = 50,
+) -> list[tuple]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT id, job_id, asked_at, status, question, answer,
+                      tables_json, charts_json, route, doc_filter, error
+               FROM ask_history ORDER BY asked_at DESC LIMIT %s""",
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def prune_ask_history(conn: psycopg.Connection, limit: int = 100) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """DELETE FROM ask_history WHERE id NOT IN (
+                   SELECT id FROM ask_history ORDER BY asked_at DESC LIMIT %s
+               )""",
+            (limit,),
+        )
 
 
 def insert_rate_snapshot(

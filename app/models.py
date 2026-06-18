@@ -149,6 +149,20 @@ class DecisionHistoryItem(BaseModel):
     trigger_ids: str | None = None
 
 
+class AskHistoryItem(BaseModel):
+    id: str
+    job_id: str | None = None
+    asked_at: int
+    status: Literal["pending", "complete", "failed"]
+    question: str
+    answer: str | None = None
+    tables: list[AnswerTable] = Field(default_factory=list)
+    charts: list[AnswerChart] = Field(default_factory=list)
+    route: str | None = None
+    doc_filter: str | None = None
+    error: str | None = None
+
+
 class DashboardMaturityItem(BaseModel):
     id: str
     account_id: str
