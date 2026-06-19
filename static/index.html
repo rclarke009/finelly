@@ -463,7 +463,7 @@
       font-size: 0.8rem;
     }
     .ask-followup-block {
-      margin-top: 1rem;
+      margin-top: 0.85rem;
       padding-top: 0.85rem;
       border-top: 1px solid var(--border);
     }
@@ -485,9 +485,6 @@
     .ask-history-followup summary {
       font-weight: 400;
       font-size: 0.92rem;
-    }
-    .ask-conversation-actions {
-      margin-bottom: 0.75rem;
     }
     /* Per-section loading/answer sits directly under its form */
     #form-ask-general-open + .message,
@@ -1288,19 +1285,16 @@
           <div id="ask-answer-md" class="answer-md"></div>
           <div id="ask-answer-extra" class="ask-answer-extra"></div>
           <div id="ask-sources" class="ask-sources" hidden></div>
-        </div>
-        <div id="ask-followup-block" class="ask-followup-block" hidden>
-          <label for="ask-followup-question">Follow-up question</label>
-          <textarea id="ask-followup-question" rows="2" placeholder="Ask a follow-up about this answer…"></textarea>
-          <div class="ask-followup-actions">
-            <button type="button" id="btn-ask-followup">Ask follow-up</button>
-            <span class="field-hint">Uses the same document scope unless you change the dropdown above.</span>
+          <div id="ask-followup-block" class="ask-followup-block" hidden>
+            <label for="ask-followup-question">Follow-up question</label>
+            <textarea id="ask-followup-question" rows="2" placeholder="Ask a follow-up about this answer…"></textarea>
+            <div class="ask-followup-actions">
+              <button type="button" id="btn-ask-followup">Ask follow-up</button>
+              <button type="button" id="btn-ask-new-conversation" class="secondary" hidden>New conversation</button>
+              <span class="field-hint">Uses the same document scope unless you change the dropdown above.</span>
+            </div>
           </div>
         </div>
-      </div>
-
-      <div class="ask-conversation-actions">
-        <button type="button" id="btn-ask-new-conversation" class="secondary">New conversation</button>
       </div>
 
       <details class="ask-section-block ingest-text-details">
@@ -3981,16 +3975,50 @@
         el.hidden = false;
       }
 
-      function showAskFollowupBlock() {
+      function hideAskFollowupBlock() {
         var block = document.getElementById('ask-followup-block');
-        if (block) block.hidden = !activeConversationId;
+        var newBtn = document.getElementById('btn-ask-new-conversation');
+        if (block) block.hidden = true;
+        if (newBtn) newBtn.hidden = true;
       }
 
-      function applyAskConversationMeta(meta) {
-        if (!meta) return;
-        if (meta.conversation_id) activeConversationId = meta.conversation_id;
-        if (meta.turn_id) activeTurnId = meta.turn_id;
-        if (meta.related_documents) renderAskSources(meta.related_documents);
+      function showAskFollowupBlock() {
+        var block = document.getElementById('ask-followup-block');
+        var newBtn = document.getElementById('btn-ask-new-conversation');
+        var visible = !!activeConversationId;
+        if (block) block.hidden = !visible;
+        if (newBtn) newBtn.hidden = !visible;
+      }
+
+      async function ensureConversationIdFromHistory() {
+        if (activeConversationId) return activeConversationId;
+        try {
+          var res = await fetch(getApiBase() + '/ask/history?limit=5');
+          var data = await res.json().catch(function () { return []; });
+          if (!res.ok || !Array.isArray(data)) return null;
+          for (var i = 0; i < data.length; i++) {
+            var item = data[i];
+            if (item.status === 'complete' && item.conversation_id) {
+              activeConversationId = item.conversation_id;
+              if (item.id) activeTurnId = item.id;
+              return activeConversationId;
+            }
+          }
+        } catch (err) {
+          console.log('MYDEBUG →', 'ensureConversationIdFromHistory failed', err);
+        }
+        return null;
+      }
+
+      async function applyAskConversationMeta(meta) {
+        if (meta) {
+          if (meta.conversation_id) activeConversationId = meta.conversation_id;
+          if (meta.turn_id) activeTurnId = meta.turn_id;
+          if (meta.related_documents) renderAskSources(meta.related_documents);
+        }
+        if (!activeConversationId) {
+          await ensureConversationIdFromHistory();
+        }
         showAskFollowupBlock();
       }
 
@@ -4001,7 +4029,6 @@
         var answerMd = document.getElementById('ask-answer-md');
         var answerExtra = document.getElementById('ask-answer-extra');
         var sources = document.getElementById('ask-sources');
-        var followup = document.getElementById('ask-followup-block');
         var followupTa = document.getElementById('ask-followup-question');
         if (answerMd) answerMd.textContent = '';
         if (answerExtra) answerExtra.innerHTML = '';
@@ -4010,7 +4037,7 @@
           sources.hidden = true;
         }
         if (answerBlock) answerBlock.hidden = true;
-        if (followup) followup.hidden = true;
+        hideAskFollowupBlock();
         if (followupTa) followupTa.value = '';
       }
 
@@ -4392,7 +4419,7 @@
             var struct = { tables: data.tables || [], charts: data.charts || [] };
             renderAnswerBlocks(targets.answerMd, targets.answerExtra, data.answer || '—', struct, targets.charts || []);
             targets.answerBlock.hidden = false;
-            applyAskConversationMeta(data);
+            await applyAskConversationMeta(data);
             hideAskLoading(targets.loading);
             setAskSubmitLoading(false);
             refreshAskHistory();
@@ -4422,6 +4449,7 @@
         };
         msg.hidden = true;
         answerBlock.hidden = true;
+        hideAskFollowupBlock();
         showAskLoading(askLoading, 'Queued — preparing your answer in the background…');
         setAskSubmitLoading(true);
         try {
@@ -4464,6 +4492,7 @@
         const askLoading = document.getElementById('ask-loading');
         msg.hidden = true;
         answerBlock.hidden = true;
+        hideAskFollowupBlock();
         showAskLoading(askLoading, askPhaseLabel('routing'));
         setAskSubmitLoading(true);
         var controller = new AbortController();
@@ -4512,56 +4541,64 @@
               setAskLoadingText(askLoading, askPhaseLabel(obj.phase), { fromPhase: true });
             }
           }
+          function processAskStreamLine(line) {
+            if (!line.trim()) return false;
+            try {
+              const obj = JSON.parse(line);
+              if (obj.error) {
+                streamErrored = true;
+                msg.textContent = formatStreamAskErrorPayload(obj);
+                msg.className = 'message error';
+                msg.hidden = false;
+                return true;
+              }
+              onStreamActivity(obj);
+              if (obj.related_documents || obj.conversation_id || obj.turn_id) {
+                streamMeta = streamMeta || {};
+                if (obj.conversation_id) streamMeta.conversation_id = obj.conversation_id;
+                if (obj.turn_id) streamMeta.turn_id = obj.turn_id;
+                if (obj.related_documents) streamMeta.related_documents = obj.related_documents;
+              }
+              if (obj.answer !== undefined) {
+                accumulated = obj.answer;
+                maybeRenderStreamPreview();
+                hideAskLoading(askLoading);
+              }
+              if (obj.delta !== undefined) {
+                accumulated += obj.delta;
+                maybeRenderStreamPreview();
+                hideAskLoading(askLoading);
+              }
+              if (obj.structured) {
+                structuredPayload = obj.structured;
+              }
+              if (obj.done && (obj.conversation_id || obj.turn_id || obj.related_documents)) {
+                streamMeta = streamMeta || {};
+                if (obj.conversation_id) streamMeta.conversation_id = obj.conversation_id;
+                if (obj.turn_id) streamMeta.turn_id = obj.turn_id;
+                if (obj.related_documents) streamMeta.related_documents = obj.related_documents;
+              }
+            } catch (err) {
+              console.log('MYDEBUG →', 'stream line parse error', err, line);
+            }
+            return false;
+          }
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
           streamLoop: while (true) {
             const { done, value } = await reader.read();
-            if (done) break streamLoop;
-            buffer += decoder.decode(value, { stream: true });
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+            }
             const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
+            buffer = done ? '' : (lines.pop() || '');
             for (let i = 0; i < lines.length; i++) {
-              const line = lines[i];
-              if (!line.trim()) continue;
-              try {
-                const obj = JSON.parse(line);
-                if (obj.error) {
-                  streamErrored = true;
-                  msg.textContent = formatStreamAskErrorPayload(obj);
-                  msg.className = 'message error';
-                  msg.hidden = false;
-                  break streamLoop;
-                }
-                onStreamActivity(obj);
-                if (obj.related_documents || obj.conversation_id || obj.turn_id) {
-                  streamMeta = streamMeta || {};
-                  if (obj.conversation_id) streamMeta.conversation_id = obj.conversation_id;
-                  if (obj.turn_id) streamMeta.turn_id = obj.turn_id;
-                  if (obj.related_documents) streamMeta.related_documents = obj.related_documents;
-                }
-                if (obj.answer !== undefined) {
-                  accumulated = obj.answer;
-                  maybeRenderStreamPreview();
-                  hideAskLoading(askLoading);
-                }
-                if (obj.delta !== undefined) {
-                  accumulated += obj.delta;
-                  maybeRenderStreamPreview();
-                  hideAskLoading(askLoading);
-                }
-                if (obj.structured) {
-                  structuredPayload = obj.structured;
-                }
-                if (obj.done && (obj.conversation_id || obj.turn_id || obj.related_documents)) {
-                  streamMeta = streamMeta || {};
-                  if (obj.conversation_id) streamMeta.conversation_id = obj.conversation_id;
-                  if (obj.turn_id) streamMeta.turn_id = obj.turn_id;
-                  if (obj.related_documents) streamMeta.related_documents = obj.related_documents;
-                }
-              } catch (err) {
-                console.log('MYDEBUG →', 'stream line parse error', err, line);
-              }
+              if (processAskStreamLine(lines[i])) break streamLoop;
+            }
+            if (done) {
+              if (buffer.trim() && processAskStreamLine(buffer)) break streamLoop;
+              break streamLoop;
             }
           }
           if (!streamErrored) {
@@ -4572,7 +4609,7 @@
               ? { tables: structuredPayload.tables || [], charts: structuredPayload.charts || [] }
               : null;
             renderAnswerBlocks(answerMd, answerExtra, finalMd, structFinal, chartAskInst);
-            applyAskConversationMeta(streamMeta);
+            await applyAskConversationMeta(streamMeta);
             refreshAskHistory();
             resetAskQuestionInput();
           }

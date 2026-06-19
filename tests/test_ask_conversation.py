@@ -129,3 +129,16 @@ def test_get_ask_conversation_endpoint(client_with_db, tmp_path):
 def test_get_ask_conversation_not_found(client_with_db):
     res = client_with_db.get("/ask/conversations/does-not-exist")
     assert res.status_code == 404
+
+
+def test_ask_meta_payload_includes_conversation_id():
+    """Stream/queue final lines must carry conversation_id for follow-up UI."""
+    from app.main import _ask_meta_payload
+
+    payload = _ask_meta_payload(
+        conversation_id="abc123",
+        turn_id="turn456",
+        related_documents=[],
+    )
+    assert payload["conversation_id"] == "abc123"
+    assert payload["turn_id"] == "turn456"
